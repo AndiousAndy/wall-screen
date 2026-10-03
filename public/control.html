@@ -879,10 +879,19 @@
     var remain = null, loopLeft = null;
     var src = programSrc();
     var pos = lastPos && lastPos.src === src && Date.now() - lastPos.at < 3000 ? lastPos : null;
+    var t = null, d = null;
     if (state.type === 'video' && pos && pos.d) {
-      var t = pos.t + (Date.now() - pos.at) / 1000;
-      if (state.loop !== false) loopLeft = pos.d - (t % pos.d);
-      else remain = Math.max(0, pos.d - t);
+      t = pos.t + (Date.now() - pos.at) / 1000;
+      d = pos.d;
+    } else if (state.type === 'video') {
+      // No OBS display reporting (OBS closed?): read the Program monitor's own copy instead.
+      var mv = null;
+      try { mv = $('pgmFrame').contentDocument.querySelector('.layer.front video'); } catch (e) {}
+      if (mv && mv.dataset.src === src && isFinite(mv.duration) && mv.duration > 0) { t = mv.currentTime; d = mv.duration; }
+    }
+    if (d) {
+      if (state.loop !== false) loopLeft = d - (t % d);
+      else remain = Math.max(0, d - t);
     }
     if (a.duration) {
       var r2 = a.duration - elapsed;
