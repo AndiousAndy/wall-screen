@@ -112,6 +112,8 @@
   .countdown.crit { color: var(--danger); animation: blink 1s steps(2, start) infinite; }
   @keyframes blink { to { opacity: .35; } }
   .cdlabel { font-size: 12px; color: var(--muted); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .timers { display: flex; gap: 22px; min-width: 0; }
+  .timers > div { min-width: 0; }
 
   /* The transport has no panel of its own, but takes the same border and padding as the monitors
      so its rows sit on the same lines: TAKE starts level with the top of the screens and SAFE
@@ -301,9 +303,15 @@
     <div class="monhead"><span class="tally pgm">PROGRAM</span><span class="monname" id="pgmName">…</span></div>
     <div class="screen" id="pgmScreen"><iframe id="pgmFrame" src="/display?preview=1" title="Program monitor" tabindex="-1"></iframe><div class="stillnote" id="pgmStill" hidden></div></div>
     <div class="pgmtools">
-      <div>
-        <div class="countdown" id="cd">0:00</div>
-        <div class="cdlabel" id="cdLabel">Elapsed</div>
+      <div class="timers">
+        <div>
+          <div class="countdown" id="cd">0:00</div>
+          <div class="cdlabel" id="cdLabel">Elapsed</div>
+        </div>
+        <div id="leftBox" hidden>
+          <div class="countdown" id="cdLeft">-0:00</div>
+          <div class="cdlabel" id="leftLabel">Left</div>
+        </div>
       </div>
       <div class="row lockable">
         <div class="looptog" id="pgmLoop" hidden title="Change the on-air video without restarting it">
@@ -880,19 +888,23 @@
       var r2 = a.duration - elapsed;
       remain = remain === null ? r2 : Math.min(remain, r2);
     }
-    var cd = $('cd'), label;
-    if (remain !== null) {
-      cd.textContent = '-' + fmtTime(Math.max(0, remain), true);
-      cd.classList.toggle('crit', remain <= 5);
-      cd.classList.toggle('warn', remain > 5 && remain <= 10);
-      label = 'Remaining · then ' + (a.autoNext ? (state.preview ? 'auto-follow: ' + itemLabel(state.preview) : 'auto-follow (nothing cued!)') : 'default loop');
-    } else {
-      cd.textContent = fmtTime(elapsed);
-      cd.classList.remove('crit', 'warn');
-      label = 'Elapsed' + (loopLeft !== null ? ' · loop restarts in ' + fmtTime(loopLeft, true) : '');
-      if (state.type === 'video' && state.loop !== false && !pos && health.displays) label = 'Elapsed · looping';
-    }
+    // Elapsed always shows; Left shows what's left of a timed item, or of this pass of a loop.
+    $('cd').textContent = fmtTime(elapsed);
+    var label = 'Elapsed';
+    if (state.type === 'video' && state.loop !== false && !pos && health.displays) label = 'Elapsed · looping';
     if ($('cdLabel').textContent !== label) $('cdLabel').textContent = $('cdLabel').title = label;
+
+    var left = remain !== null ? remain : loopLeft, cdLeft = $('cdLeft'), leftLabel = '';
+    $('leftBox').hidden = left === null;
+    if (left !== null) {
+      cdLeft.textContent = '-' + fmtTime(Math.max(0, left), true);
+      cdLeft.classList.toggle('crit', remain !== null && remain <= 5);
+      cdLeft.classList.toggle('warn', remain !== null && remain > 5 && remain <= 10);
+      leftLabel = remain !== null
+        ? 'Left · then ' + (a.autoNext ? (state.preview ? 'auto-follow: ' + itemLabel(state.preview) : 'auto-follow (nothing cued!)') : 'default loop')
+        : 'Left · loop restarts';
+    }
+    if ($('leftLabel').textContent !== leftLabel) $('leftLabel').textContent = $('leftLabel').title = leftLabel;
   }
   setInterval(tick, 200);
 
