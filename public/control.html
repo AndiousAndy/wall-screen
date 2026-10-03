@@ -1,0 +1,1578 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>Wall Screen</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1f232c; --line: #2a2f3a;
+    --text: #e8eaef; --muted: #8a92a3; --accent: #4f8cff; --live: #22c55e;
+    --danger: #ef4444; --warn: #f59e0b; --radius: 12px;
+    --pvw: #22c55e; --pgm: #ef4444;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+    /* One spacing unit and one column system shared by the switcher and the lower area,
+       so panel edges line up top to bottom. */
+    --gap: 12px; --pad: 14px;
+    --cols: minmax(0, 1fr) 184px minmax(0, 1fr);
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { color-scheme: dark; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: var(--gap) 16px 24px;
+  }
+  h2 { font-size: 14px; color: var(--text); margin: 0; font-weight: 650; }
+  section, .mon { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--pad); min-width: 0; }
+  .sechead { display: flex; align-items: center; gap: 8px; margin-bottom: var(--gap); flex-wrap: wrap; min-height: 38px; }
+  .sechead h2 { margin-right: auto; }
+  .muted { color: var(--muted); font-size: 13px; }
+
+  /* ---------- top bar ---------- */
+  .top { display: flex; align-items: center; gap: 10px; margin-bottom: var(--gap); flex-wrap: wrap; }
+  .brand { font-weight: 800; letter-spacing: .14em; font-size: 14px; margin-right: auto; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 3px rgba(239,68,68,.2); flex: none; }
+  .dot.ok { background: var(--live); box-shadow: 0 0 0 3px rgba(34,197,94,.2); }
+  .dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(245,158,11,.2); }
+  .clock { font: 700 22px/1 var(--mono); font-variant-numeric: tabular-nums; min-width: 105px; text-align: right; }
+  .alert { background: var(--danger); color: #fff; padding: 8px 12px; border-radius: 10px; margin-bottom: var(--gap); display: flex; gap: 10px; align-items: center; font-weight: 600; }
+  .alert span { flex: 1; }
+  .alert button { background: rgba(0,0,0,.25); border-color: transparent; color: #fff; min-height: 30px; padding: 4px 10px; }
+
+  /* ---------- buttons & inputs ---------- */
+  button {
+    appearance: none; border: 1px solid var(--line); background: var(--panel2); color: var(--text);
+    padding: 8px 12px; border-radius: 9px; font: inherit; font-weight: 600; cursor: pointer;
+    touch-action: manipulation; min-height: 38px;
+  }
+  button:hover { border-color: #3a4150; }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: .45; cursor: default; transform: none; }
+  button.sm { min-height: 30px; padding: 4px 10px; font-size: 13px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); }
+  button.danger.armed { background: var(--danger); color: #fff; border-color: var(--danger); }
+  button.armed { background: #b7791f; color: #fff; border-color: #b7791f; }
+  button.on { background: #2b3445; border-color: #45506a; color: var(--text); }
+  button small { display: block; font-size: 11px; font-weight: 500; opacity: .8; letter-spacing: 0; text-transform: none; }
+  input[type=text], input[type=url], input[type=number], input[type=search], select, textarea {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 9px; padding: 7px 10px; font: inherit; min-height: 38px; min-width: 0;
+  }
+  input[type=color] { width: 42px; height: 38px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel2); padding: 3px; flex: none; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; min-height: 34px; padding: 4px 10px; font-size: 13px; background: var(--panel2); }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.on { background: var(--accent); color: #fff; }
+
+  /* ---------- switcher ---------- */
+  /* Three shared rows: header, screen, tools. Preview, transport and Program each span all
+     three as a subgrid, so the headers, screens and tool rows line up across the desk. */
+  .switcher { display: grid; grid-template-columns: var(--cols); grid-template-rows: auto auto auto; column-gap: var(--gap); margin-bottom: var(--gap); }
+  .mon, .transport { grid-row: 1 / span 3; display: grid; grid-template-rows: subgrid; row-gap: 10px; }
+  .monhead { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 24px; }
+  .tally { font-size: 12px; font-weight: 800; letter-spacing: .12em; padding: 3px 8px; border-radius: 4px; color: #fff; flex: none; }
+  .tally.pvw { background: var(--pvw); color: #04140a; }
+  .tally.pgm { background: var(--pgm); }
+  .monname { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .screen { position: relative; aspect-ratio: 16 / 9; align-self: start; background: #000; border-radius: 6px; overflow: hidden; border: 3px solid var(--line); }
+  .mon.pvw .screen { border-color: var(--pvw); }
+  .mon.pgm .screen { border-color: var(--pgm); }
+  .stage, .screen > iframe { position: absolute; top: 0; left: 0; width: 1920px; height: 1080px; transform-origin: 0 0; border: 0; pointer-events: none; }
+  .stage > * { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
+  .stage > .black { background: #000; }
+  .stage > .text {
+    display: flex; align-items: center; justify-content: center; padding: 80px; color: #fff; text-align: center;
+    font: 700 110px/1.15 "Segoe UI", Roboto, Helvetica, Arial, sans-serif; white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .stillnote {
+    position: absolute; left: 8px; bottom: 8px; max-width: calc(100% - 16px);
+    background: rgba(0,0,0,.75); color: var(--text); font-size: 12px; line-height: 1.35;
+    padding: 4px 8px; border-radius: 6px; pointer-events: none;
+  }
+  .screen .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 16px; }
+  .montools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-height: 38px; }
+  .scrub { flex: 1 1 140px; accent-color: var(--pvw); }
+  .time { font: 13px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .looptog { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+  .looptog[hidden] { display: none; }
+  .looptog button { border: 0; border-radius: 0; min-height: 34px; padding: 4px 10px; font-size: 13px; background: transparent; color: var(--muted); }
+  .looptog button.on { background: #2b3445; color: var(--text); }
+  /* Sound on is the one setting worth noticing at a glance, so it takes the accent colour. */
+  .looptog.sound button[data-audio="1"].on { background: var(--accent); color: #fff; }
+  .pgmtools { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  .pgmtools > div:first-child { min-width: 0; }
+  .countdown { font: 700 34px/1 var(--mono); font-variant-numeric: tabular-nums; }
+  .countdown.warn { color: var(--warn); }
+  .countdown.crit { color: var(--danger); animation: blink 1s steps(2, start) infinite; }
+  @keyframes blink { to { opacity: .35; } }
+  .cdlabel { font-size: 12px; color: var(--muted); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* The transport has no panel of its own, but takes the same border and padding as the monitors
+     so its rows sit on the same lines: TAKE starts level with the top of the screens and SAFE
+     ends level with their bottom. */
+  .transport { border: 1px solid transparent; padding: var(--pad) 0; min-width: 0; }
+  .transport button { width: 100%; }
+  .tbtns { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  button.take { background: var(--pgm); border-color: var(--pgm); color: #fff; font-size: 24px; font-weight: 800; letter-spacing: .1em; flex: 3 1 0; min-height: 64px; }
+  button.auto { background: #b45309; border-color: #b45309; color: #fff; font-size: 18px; font-weight: 800; letter-spacing: .1em; flex: 2 1 0; min-height: 48px; }
+  button.ftb, button.safe { font-weight: 800; letter-spacing: .08em; min-height: 46px; }
+  /* Faded to black: FTB flashes until pressed again to fade back up, as on a hardware switcher. */
+  @keyframes ftbOn { to { background: #7f1d1d; border-color: #7f1d1d; } }
+  button.ftb.on { background: var(--pgm); border-color: var(--pgm); color: #fff; animation: ftbOn 1s steps(2, start) infinite; }
+  /* A press on its way to the server, then the moment the server has it. */
+  .transport button.sent { filter: brightness(.75); }
+  .transport button.acked { box-shadow: inset 0 0 0 3px rgba(255,255,255,.9); }
+  @media (prefers-reduced-motion: reduce) { button.ftb.on { animation: none; } }
+  /* FTB and SAFE are a separate, two-press group: set apart from TAKE/AUTO by a double gap. */
+  button.ftb { margin-top: 8px; }
+  .rate { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; align-self: center; }
+  .rate select { flex: 1; min-height: 34px; padding: 4px 6px; }
+  .next { font-size: 12px; color: var(--muted); text-align: center; align-self: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .next b { color: var(--pvw); font-weight: 600; }
+
+  /* ---------- lower area ---------- */
+  /* Same columns as the switcher: the rundown runs under Preview and the transport,
+     the library column sits exactly under Program. */
+  .lower { display: grid; grid-template-columns: var(--cols); gap: var(--gap); align-items: start; }
+  .lower > .col:first-child { grid-column: 1 / span 2; }
+  .lower > .col:last-child { grid-column: 3; }
+  .col { display: grid; gap: var(--gap); min-width: 0; }
+
+  .rdcols, .rdrow { display: grid; grid-template-columns: 20px 26px 64px minmax(0, 1fr) 64px 62px 62px 40px 64px 40px; gap: 8px; align-items: center; }
+  .rdcols { font-size: 12px; color: var(--muted); padding: 0 9px 6px 12px; }
+  .rdlist { display: grid; gap: 4px; min-height: 60px; border-radius: 8px; }
+  .rdlist.drop-empty { outline: 2px dashed var(--accent); }
+  .rdrow { background: var(--panel2); border: 1px solid transparent; border-left: 4px solid transparent; border-radius: 8px; padding: 5px 8px; cursor: pointer; }
+  .rdrow:hover { border-color: #3a4150; }
+  .rdrow.past { opacity: .55; }
+  .rdrow.cued { border-left-color: var(--pvw); background: rgba(34,197,94,.08); }
+  .rdrow.onair { border-left-color: var(--pgm); background: rgba(239,68,68,.12); opacity: 1; }
+  .rdrow.dragging { opacity: .4; }
+  .rdrow.drop-before { box-shadow: 0 -3px 0 var(--accent); }
+  .rdrow.drop-after { box-shadow: 0 3px 0 var(--accent); }
+  .rdrow .handle { color: var(--muted); cursor: grab; text-align: center; user-select: none; letter-spacing: -2px; }
+  .rdrow .num { color: var(--muted); font: 13px var(--mono); text-align: right; }
+  .rthumb { width: 64px; aspect-ratio: 16/9; background: #000; border-radius: 4px; overflow: hidden; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; color: var(--muted); letter-spacing: .06em; }
+  .rthumb img, .rthumb video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+  .rdrow .title { min-width: 0; }
+  .rdrow .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rdrow .name input { width: 100%; min-height: 28px; padding: 2px 6px; }
+  .rdrow .sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rdrow input.dur { width: 64px; min-height: 30px; padding: 2px 6px; text-align: right; }
+  .rdrow button { min-height: 30px; padding: 2px 6px; font-size: 12px; }
+  .rdrow button.snd.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .rdrow .st { font-size: 11px; font-weight: 800; letter-spacing: .06em; text-align: center; border-radius: 4px; padding: 2px 0; }
+  .st.onair { background: var(--pgm); color: #fff; }
+  .st.cued { background: var(--pvw); color: #04140a; }
+  .st.missing { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+  .rdadd { display: flex; gap: 8px; margin-top: var(--gap); flex-wrap: wrap; }
+  .rdadd input { flex: 1 1 200px; }
+  .hint { margin-top: 8px; }
+  .empty-list { color: var(--muted); padding: 18px; text-align: center; border: 1px dashed var(--line); border-radius: 8px; }
+
+  .asrun { font: 12px/1.6 var(--mono); max-height: 220px; overflow: auto; }
+  .asrun div { display: grid; grid-template-columns: 72px 100px minmax(0, 1fr); gap: 8px; border-bottom: 1px solid var(--line); }
+  .asrun .a { font-weight: 700; }
+  .asrun .l { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .drop {
+    border: 1px dashed #3a4150; border-radius: 9px; padding: 6px 12px; min-height: 38px; text-align: center;
+    display: flex; align-items: center; justify-content: center; gap: 4px;
+    color: var(--muted); cursor: pointer; transition: border-color .15s, background .15s; flex: 1 1 200px;
+  }
+  .drop.over { border-color: var(--accent); background: rgba(79,140,255,.08); color: var(--text); }
+  #libraryPanel { transition: border-color .15s, background-color .15s; }
+  #libraryPanel.dropping { border-color: var(--accent); background-color: #18202e; box-shadow: inset 0 0 0 1px var(--accent); }
+  .uploads { display: grid; gap: 6px; margin: 8px 0; }
+  .uploads:empty { display: none; }
+  .up { background: var(--panel2); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+  .up .name { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .up .name span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar { height: 6px; background: #0b0d11; border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+  .up.done .bar i { background: var(--live); }
+  .up.err .bar i { background: var(--danger); }
+
+  .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); margin-top: var(--gap); }
+  .card { background: var(--panel2); border: 2px solid transparent; border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+  .card.pvw { border-color: var(--pvw); }
+  .card.pgm { border-color: var(--pgm); }
+  .thumb { position: relative; aspect-ratio: 16/9; background: #000; cursor: pointer; }
+  .thumb img, .thumb video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+  .thumb .tags { position: absolute; top: 5px; left: 5px; display: flex; gap: 4px; flex-wrap: wrap; }
+  .tag { font-size: 10px; font-weight: 800; letter-spacing: .06em; padding: 2px 5px; border-radius: 4px; color: #fff; }
+  .tag.pgm { background: var(--pgm); }
+  .tag.pvw { background: var(--pvw); color: #04140a; }
+  .tag.def { background: var(--accent); }
+  .tag.bad { background: #000; color: var(--danger); border: 1px solid var(--danger); }
+  .thumb .dur { position: absolute; bottom: 5px; right: 5px; background: rgba(0,0,0,.75); color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+  .card .meta { padding: 8px 8px 0; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .actions { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 4px; padding: 8px; }
+  .card .actions button { min-height: 30px; padding: 2px 4px; font-size: 12px; white-space: nowrap; }
+
+  .default-box { display: flex; gap: 12px; align-items: center; }
+  .default-thumb { width: 140px; flex: none; aspect-ratio: 16/9; background: #000; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+  .default-thumb img, .default-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+    background: #2b3445; color: var(--text); padding: 10px 16px; border-radius: 10px; font-size: 14px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.4); z-index: 10; max-width: calc(100% - 32px);
+  }
+  .toast.err { background: var(--danger); color: #fff; }
+
+  body.locked .lockable { pointer-events: none; opacity: .45; }
+  #btnLock.on { background: var(--warn); border-color: var(--warn); color: #1a1205; }
+
+  @media (max-width: 1050px) {
+    .switcher { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; row-gap: var(--gap); }
+    .mon { grid-row: auto; display: flex; flex-direction: column; gap: 10px; }
+    .transport { grid-row: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0; border: 0; }
+    .tbtns { display: contents; }
+    .transport .next, .transport .rate { grid-column: 1 / -1; }
+    button.take, button.auto { min-height: 64px; }
+    button.ftb { margin-top: 0; }
+    .lower { grid-template-columns: minmax(0, 1fr); }
+    .lower > .col:first-child, .lower > .col:last-child { grid-column: auto; }
+  }
+  @media (max-width: 640px) {
+    .rdcols { display: none; }
+    /* Handle, thumbnail, name, mode, sound, remove. On air and cued still show as row colour. */
+    .rdrow { grid-template-columns: 18px 56px minmax(0, 1fr) 54px 54px 36px; }
+    .rdrow .num, .rdrow input.dur, .rdrow .af, .rdrow .st { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="brand">WALL SCREEN</div>
+  <span class="pill" title="Connection from this page to the wall-screen server"><span class="dot" id="srvDot"></span><span id="srvText">Connecting…</span></span>
+  <span class="pill" id="obsPill"><span class="dot" id="obsDot"></span><span id="obsText">OBS display: …</span></span>
+  <button class="sm" id="btnLock" title="Lock the panel against accidental clicks and key presses">Lock</button>
+  <span class="clock" id="clock">--:--:--</span>
+</div>
+<div class="alert" id="alert" hidden><span id="alertText"></span><button id="alertClose">Dismiss</button></div>
+<div class="alert" id="srvAlert" hidden><span>The server is running an older version, so TAKE, AUTO and FTB can be delayed. Restart it: press Ctrl+C in its window, then run node server.js.</span></div>
+
+<div class="switcher">
+  <div class="mon pvw">
+    <div class="monhead"><span class="tally pvw">PREVIEW</span><span class="monname" id="pvwName">Nothing cued</span></div>
+    <div class="screen" id="pvwScreen"><div class="stage" id="pvwStage"></div><div class="empty" id="pvwEmpty">Nothing in preview.<br>Click a rundown row or library item to cue it.</div><div class="stillnote" id="pvwStill" hidden></div></div>
+    <div class="montools lockable">
+      <button class="sm" id="pvwPlay" hidden>Pause</button>
+      <input type="range" class="scrub" id="pvwScrub" min="0" max="1000" value="0" hidden>
+      <span class="time" id="pvwTime"></span>
+      <div class="looptog" id="pvwLoop" hidden title="Loop or play once when this goes to air">
+        <button data-loop="1">Loop</button><button data-loop="0">Play once</button>
+      </div>
+      <div class="looptog sound" id="pvwSound" hidden title="Play this video's sound on the wall when it goes to air">
+        <button data-audio="0">Muted</button><button data-audio="1">Sound</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="transport lockable">
+    <div class="next" id="nextLine"></div>
+    <div class="tbtns">
+      <button class="take" id="btnTake">TAKE<small>Space · cut</small></button>
+      <button class="auto" id="btnAuto">AUTO<small>Enter · dissolve</small></button>
+      <button class="ftb" id="btnFtb">FTB<small>B · fade to black</small></button>
+      <button class="safe" id="btnSafe">SAFE<small>back to default loop</small></button>
+    </div>
+    <label class="rate">Rate
+      <select id="autoMs">
+        <option value="0">Cut</option>
+        <option value="250">0.25s</option>
+        <option value="500">0.5s</option>
+        <option value="600">0.6s</option>
+        <option value="1000">1s</option>
+        <option value="2000">2s</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="mon pgm">
+    <div class="monhead"><span class="tally pgm">PROGRAM</span><span class="monname" id="pgmName">…</span></div>
+    <div class="screen" id="pgmScreen"><iframe id="pgmFrame" src="/display?preview=1" title="Program monitor" tabindex="-1"></iframe><div class="stillnote" id="pgmStill" hidden></div></div>
+    <div class="pgmtools">
+      <div>
+        <div class="countdown" id="cd">0:00</div>
+        <div class="cdlabel" id="cdLabel">Elapsed</div>
+      </div>
+      <div class="row lockable">
+        <div class="looptog" id="pgmLoop" hidden title="Change the on-air video without restarting it">
+          <button data-loop="1">Loop</button><button data-loop="0">Play once</button>
+        </div>
+        <div class="looptog sound" id="pgmSound" hidden title="Turn the on-air video's sound on or off without restarting it">
+          <button data-audio="0">Muted</button><button data-audio="1">Sound</button>
+        </div>
+        <div class="seg" id="fitSeg" title="How media fills the wall">
+          <button data-fit="cover">Fill</button><button data-fit="contain">Fit</button><button data-fit="fill">Stretch</button>
+        </div>
+        <input type="color" id="bgPick" value="#000000" title="Background colour">
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="lower">
+  <div class="col">
+    <section>
+      <div class="sechead lockable">
+        <h2>Rundown</h2>
+        <select id="rdSelect" title="Switch rundown"></select>
+        <button class="sm" id="rdNew">New</button>
+        <button class="sm" id="rdRename">Rename</button>
+        <button class="sm danger" id="rdDelete">Delete</button>
+      </div>
+      <div class="rdcols"><span></span><span>#</span><span></span><span>Item</span><span title="Hold time in seconds, then end">Hold (s)</span><span>Mode</span><span title="Play the video's sound on the wall">Sound</span><span title="Auto-follow: when this ends, take the next item">AF</span><span>Status</span><span></span></div>
+      <div class="rdlist lockable" id="rdList"></div>
+      <div class="rdadd lockable">
+        <select id="addKind">
+          <option value="page">Web page</option>
+          <option value="video">Video URL</option>
+          <option value="image">Image URL</option>
+          <option value="text">Text</option>
+        </select>
+        <input type="text" id="addValue" placeholder="https://… or example.com" autocomplete="off">
+        <button id="addBtn">Add</button>
+        <button id="addBlack">+ Black</button>
+        <button id="addDefault">+ Default loop</button>
+      </div>
+      <div class="muted hint">Click a row to cue it in Preview, then TAKE or AUTO. Drag rows by ⋮⋮ to reorder, or drag library items in. Double-click a name to rename it. ↑ / ↓ cue the previous / next row.</div>
+    </section>
+
+    <section>
+      <div class="sechead"><h2>As-run log</h2><a id="asrunCsv" class="muted" href="/api/asrun.csv" download>Download CSV</a></div>
+      <div class="asrun" id="asrun"><span class="muted">Nothing aired yet this session.</span></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section id="libraryPanel">
+      <div class="sechead"><h2>Library</h2></div>
+      <div class="row">
+        <input type="search" id="libSearch" placeholder="Search files…" style="flex:1 1 160px">
+        <div class="drop lockable" id="drop"><strong>Drop files</strong> or click to upload</div>
+        <input type="file" id="fileInput" multiple accept="image/*,video/*,.mov" hidden>
+      </div>
+      <div class="uploads" id="uploads"></div>
+      <div class="grid lockable" id="grid"></div>
+    </section>
+
+    <section>
+      <div class="sechead"><h2>Default loop</h2></div>
+      <div class="default-box">
+        <div class="default-thumb" id="defThumb"></div>
+        <div>
+          <div id="defName" style="font-weight:600;word-break:break-all">No default set</div>
+          <div class="muted">Plays whenever nothing else is on air, and after SAFE or a play-once clip ends. Change it with "Default" on a library item.</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="sechead"><h2>OBS browser source</h2></div>
+      <div class="row">
+        <input type="text" id="obsUrl" readonly value="…" style="flex:1 1 200px">
+        <button class="primary" id="btnCopyObs">Copy</button>
+      </div>
+      <div class="muted" style="margin-top:6px">Width 1920, height 1080. <span id="obsLan"></span></div>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var KEY = params.get('key') || '';
+  var state = null;
+  var rundowns = null;
+  var media = [];
+  var health = { displays: 0 };
+  var lastPos = null;      // last position report from the OBS display
+  var clockOffset = 0;     // server clock minus this browser's clock
+  var alertSrc = '';
+  var bad = {};            // src -> reason the browser can't play it
+
+  var $ = function (id) { return document.getElementById(id); };
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  // ---------- API ----------
+  // Switcher commands go over a WebSocket (see "command socket" in server.js). Plain HTTP requests
+  // share the browser's six connections to the server with the monitors' videos, so they can
+  // wait for one and then all arrive at once. Each command carries when it was pressed, in server
+  // time, and the server refuses one that arrives late rather than fire it after the moment.
+  var SOCK_PATHS = { '/api/take': 1, '/api/auto': 1, '/api/ftb': 1, '/api/safe': 1, '/api/next': 1, '/api/prev': 1, '/api/preview': 1, '/api/show': 1, '/api/settings': 1 };
+  var sock = null, sockSeq = 0, sockWait = {}, sockFails = 0;
+  var pings = {}, lastPong = 0;
+  var clockSamples = []; // [round trip, offset] from recent pings; the quickest is the most exact
+
+  function openSock() {
+    var s, opened = false;
+    try { s = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws' + (KEY ? '?key=' + encodeURIComponent(KEY) : '')); }
+    catch (e) { sockFails++; renderConn(); setTimeout(openSock, 2000); return; }
+    s.onopen = function () {
+      opened = true;
+      sock = s;
+      sockFails = 0;
+      lastPong = Date.now();
+      ping();
+      renderConn();
+    };
+    s.onmessage = function (e) {
+      var m;
+      try { m = JSON.parse(e.data); } catch (err) { return; }
+      if (m.type === 'pong') return onPong(m);
+      var w = sockWait[m.id];
+      if (w) { delete sockWait[m.id]; w(m); }
+    };
+    s.onclose = function () {
+      if (s.replaced) return;
+      if (sock === s) sock = null;
+      if (!opened) sockFails++;
+      failWaiting();
+      renderConn();
+      setTimeout(openSock, 1000);
+    };
+  }
+  function failWaiting() {
+    Object.keys(sockWait).forEach(function (id) {
+      var w = sockWait[id];
+      delete sockWait[id];
+      w({ status: 0, error: 'Lost the connection to the server. Check what is on air, then press again.' });
+    });
+  }
+
+  // A ping every 2s proves the connection is alive: with no answer for 5s it is replaced
+  // straight away rather than left to time out. The answers also measure the server's clock.
+  function ping() {
+    if (!sock || sock.readyState !== 1) return;
+    if (Date.now() - lastPong > 5000) {
+      var dead = sock;
+      dead.replaced = true;
+      sock = null;
+      pings = {};
+      try { dead.close(); } catch (e) {}
+      failWaiting();
+      renderConn();
+      openSock();
+      return;
+    }
+    var id = 'p' + (++sockSeq);
+    pings[id] = Date.now();
+    sock.send(JSON.stringify({ type: 'ping', id: id }));
+  }
+  setInterval(ping, 2000);
+  function onPong(m) {
+    var t0 = pings[m.id], t1 = Date.now();
+    delete pings[m.id];
+    lastPong = t1;
+    if (!t0 || typeof m.now !== 'number') return;
+    clockSamples.push([t1 - t0, m.now - (t0 + t1) / 2]);
+    if (clockSamples.length > 15) clockSamples.shift();
+    var best = clockSamples[0];
+    clockSamples.forEach(function (c) { if (c[0] < best[0]) best = c; });
+    clockOffset = best[1];
+  }
+  openSock();
+
+  // When the input happened, in server time: a press that waited in a busy page is still
+  // timed from the click itself.
+  function pressedAt(e) {
+    var ago = e && e.timeStamp > 0 && window.performance ? performance.now() - e.timeStamp : 0;
+    if (!(ago > 0 && ago < 60000)) ago = 0;
+    return Date.now() - ago + clockOffset;
+  }
+  function sentAt() { return state ? serverNow() : undefined; }
+
+  function sockSend(path, body, at) {
+    return new Promise(function (resolve, reject) {
+      var id = ++sockSeq;
+      var timer = setTimeout(function () {
+        if (!sockWait[id]) return;
+        delete sockWait[id];
+        reject(new Error('No answer from the server. Check what is on air before pressing again.'));
+      }, 4000);
+      sockWait[id] = function (m) {
+        clearTimeout(timer);
+        if (m.status === 200) resolve({}); else reject(new Error(m.error || 'Error ' + m.status));
+      };
+      sock.send(JSON.stringify({ id: id, path: path, body: body || {}, at: at }));
+    });
+  }
+
+  // at: when a switcher command was pressed (server time); defaults to now.
+  function api(method, path, body, at) {
+    var timed = method === 'POST' && SOCK_PATHS[path];
+    if (timed && at === undefined) at = sentAt();
+    if (timed && sock && sock.readyState === 1) {
+      return sockSend(path, body, at).catch(function (e) { toast(e.message, true); throw e; });
+    }
+    var opts = { method: method, headers: {} };
+    if (KEY) opts.headers['X-Key'] = KEY;
+    if (timed && at !== undefined) opts.headers['X-Sent-At'] = String(Math.round(at));
+    if (body !== undefined) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(path, opts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+        return j;
+      });
+    }).catch(function (e) { toast(e.message, true); throw e; });
+  }
+  function act(path, body) { return api('POST', path, body).catch(function () {}); }
+  function keyed(path) { return KEY ? path + (path.indexOf('?') < 0 ? '?' : '&') + 'key=' + encodeURIComponent(KEY) : path; }
+
+  var toastTimer;
+  function toast(msg, err) {
+    var t = document.querySelector('.toast');
+    if (!t) { t = el('div', 'toast'); document.body.appendChild(t); }
+    t.textContent = msg; t.classList.toggle('err', !!err);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.remove(); }, 3000);
+  }
+
+  // Two-tap confirm: the first tap arms the button for 3s, the second runs the action.
+  function twoTap(btn, action, armedText) {
+    var timer;
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (!btn.classList.contains('armed')) {
+        btn.dataset.label = btn.innerHTML;
+        btn.classList.add('armed'); btn.textContent = armedText || 'Tap again to confirm';
+        timer = setTimeout(function () { disarm(btn); }, 3000);
+        return;
+      }
+      clearTimeout(timer); disarm(btn); action();
+    });
+  }
+  function disarm(btn) {
+    if (!btn.classList.contains('armed')) return;
+    btn.classList.remove('armed'); btn.innerHTML = btn.dataset.label;
+    renderTags();
+  }
+  function disarmAll() { Array.prototype.forEach.call(document.querySelectorAll('button.armed'), disarm); }
+
+  // ---------- helpers ----------
+  function newId() { return Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4); }
+  function nameFromSrc(src) {
+    if (!src) return '';
+    if (src.indexOf('/media/') === 0) { try { return decodeURIComponent(src.slice(7)); } catch (e) { return src.slice(7); } }
+    return src;
+  }
+  function fmtTime(s, up) {
+    if (!isFinite(s)) return '–:––';
+    s = up ? Math.ceil(s) : Math.floor(s);
+    if (s < 0) s = 0;
+    var h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, r = s % 60;
+    return (h ? h + ':' + (m < 10 ? '0' : '') : '') + m + ':' + (r < 10 ? '0' : '') + r;
+  }
+  function fmtSize(b) {
+    if (b > 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
+    if (b > 1048576) return (b / 1048576).toFixed(1) + ' MB';
+    return Math.max(1, Math.round(b / 1024)) + ' KB';
+  }
+  var TYPE_NAMES = { video: 'Video', image: 'Image', page: 'Web page', text: 'Text', blank: 'Blank', black: 'Black', 'default': 'Default loop' };
+  var TYPE_BADGE = { page: 'WEB', text: 'TEXT', blank: 'BLANK', black: 'BLACK', 'default': 'DEF' };
+  function itemLabel(it) {
+    if (!it) return '';
+    if (it.label) return it.label;
+    if (it.type === 'text') return (it.text || '').replace(/\s+/g, ' ').slice(0, 60) || 'Text';
+    if (it.type === 'default') return 'Default loop' + (state && state.default && state.default.src ? ' (' + nameFromSrc(state.default.src) + ')' : '');
+    if (it.src) return nameFromSrc(it.src);
+    return TYPE_NAMES[it.type] || it.type;
+  }
+  // What a given item actually shows: "default" resolves to the default loop file.
+  function resolvedSrc(it) {
+    if (!it) return '';
+    if (it.type === 'default') return state && state.default ? state.default.src : '';
+    return it.type === 'image' || it.type === 'video' ? it.src : '';
+  }
+  function programItem() {
+    if (!state) return null;
+    var a = state.onAir || {};
+    return { type: state.type, src: state.src, text: state.text, label: a.label, loop: state.loop };
+  }
+  function programSrc() { return resolvedSrc(programItem()); }
+  function previewSrc() { return resolvedSrc(state && state.preview); }
+  function serverNow() { return Date.now() + clockOffset; }
+  // Video thumbnails are grabbed once, one at a time, and the video is then released.
+  // Chrome allows only six connections per server and every <video> holds one open, so
+  // live <video> thumbnails would starve the Preview and Program monitors.
+  var thumbCache = {}, thumbQueue = [], thumbBusy = false;
+  function videoInfo(src, cb) {
+    if (thumbCache[src]) return cb(thumbCache[src]);
+    thumbQueue.push({ src: src, cb: cb });
+    pumpThumbs();
+  }
+  function pumpThumbs() {
+    if (thumbBusy || !thumbQueue.length) return;
+    var job = thumbQueue.shift();
+    if (thumbCache[job.src]) { job.cb(thumbCache[job.src]); return pumpThumbs(); }
+    thumbBusy = true;
+    var v = document.createElement('video');
+    v.muted = true; v.preload = 'auto';
+    var finished = false;
+    var done = function (res) {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      v.removeAttribute('src'); v.load();
+      thumbCache[job.src] = res;
+      thumbBusy = false;
+      job.cb(res);
+      pumpThumbs();
+    };
+    var timer = setTimeout(function () { done({}); }, 15000);
+    v.addEventListener('loadedmetadata', function () {
+      if (!v.videoWidth) return done({ duration: v.duration, bad: 'No picture this browser can decode (HEVC/ProRes?). Re-encode to H.264 MP4' });
+      v.currentTime = Math.min(0.5, v.duration / 2 || 0);
+    });
+    v.addEventListener('seeked', function () {
+      var c = document.createElement('canvas');
+      c.width = 320; c.height = 180;
+      var g = c.getContext('2d');
+      var s = Math.max(320 / v.videoWidth, 180 / v.videoHeight); // cover
+      var w = v.videoWidth * s, h = v.videoHeight * s;
+      g.drawImage(v, (320 - w) / 2, (180 - h) / 2, w, h);
+      var url = '';
+      try { url = c.toDataURL('image/jpeg', 0.75); } catch (e) {}
+      done({ url: url, duration: v.duration });
+    });
+    v.addEventListener('error', function () { done({ bad: "Can't play: re-encode to H.264 MP4" }); });
+    v.src = job.src;
+  }
+  // onInfo({ duration, bad }) is called for videos once the thumbnail grab finishes.
+  function thumbEl(type, src, onInfo) {
+    var e = document.createElement('img');
+    e.alt = '';
+    if (type === 'video') {
+      e.style.visibility = 'hidden';
+      videoInfo(src, function (res) {
+        if (res.url) { e.src = res.url; e.style.visibility = ''; }
+        if (onInfo) onInfo(res);
+      });
+    } else {
+      e.loading = 'lazy'; e.src = src;
+      if (onInfo) e.addEventListener('error', function () { onInfo({ bad: "Can't load this image" }); });
+    }
+    return e;
+  }
+  function hasType(dt, t) { return Array.prototype.indexOf.call(dt.types || [], t) >= 0; }
+
+  // ---------- monitors ----------
+  function fitScreens() {
+    Array.prototype.forEach.call(document.querySelectorAll('.screen'), function (s) {
+      var c = s.querySelector('.stage, iframe');
+      if (c) c.style.transform = 'scale(' + (s.clientWidth / 1920) + ')';
+    });
+  }
+  if (window.ResizeObserver) {
+    var ro = new ResizeObserver(fitScreens);
+    Array.prototype.forEach.call(document.querySelectorAll('.screen'), function (s) { ro.observe(s); });
+  }
+  window.addEventListener('resize', fitScreens);
+  fitScreens();
+
+  // The monitors decode video in this browser, on top of OBS's own copy. Beyond what graphics
+  // cards decode in hardware (about 4096x2304 for H.264) the browser falls back to the CPU and
+  // stutters, so such videos show here as a still frame. The same check is in display.html.
+  var MAX_PLAY_PIXELS = 4096 * 2304;
+  function tooBigToPlay(v) { return v.videoWidth * v.videoHeight > MAX_PLAY_PIXELS; }
+  // True when the video dropped over a quarter of its frames since the last call (about 1s ago).
+  function struggling(v) {
+    var q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null;
+    if (!q || v.paused || document.hidden) { v.lastQ = null; return false; }
+    var last = v.lastQ;
+    v.lastQ = { total: q.totalVideoFrames, dropped: q.droppedVideoFrames };
+    if (!last) return false;
+    var total = q.totalVideoFrames - last.total, dropped = q.droppedVideoFrames - last.dropped;
+    return total >= 20 && dropped / total > 0.25;
+  }
+  function stillText(v, why) {
+    return 'Still frame: ' + (why === 'size'
+      ? v.videoWidth + '×' + v.videoHeight + ' is too big to play smoothly here.'
+      : "this browser can't keep up with this video.") + ' The wall plays it normally.';
+  }
+
+  // Preview plays locally in this page; nothing here touches the wall until TAKE.
+  var pvwKey = null, pvwVideo = null, scrubbing = false;
+  var pvwForced = false; // Play was pressed on a still, so leave it playing
+  function pvwGoStill(why) {
+    if (!pvwVideo || pvwForced) return;
+    pvwVideo.autoplay = false;
+    pvwVideo.pause();
+    $('pvwStill').textContent = stillText(pvwVideo, why) + ' Press Play to try anyway.';
+    $('pvwStill').hidden = false;
+  }
+  function renderPreview() {
+    var it = state.preview;
+    $('pvwName').textContent = it ? itemLabel(it) : 'Nothing cued';
+    var isVid = !!it && it.type === 'video';
+    $('pvwLoop').hidden = $('pvwSound').hidden = !isVid;
+    paintLoopTog($('pvwLoop'), isVid && it.loop !== false);
+    paintSoundTog($('pvwSound'), isVid && !!it.audio);
+
+    var fit = (it && it.fit) || state.fit || 'cover';
+    var bg = (it && it.bg) || state.bg || '#000';
+    var src = resolvedSrc(it);
+    var key = it ? [it.type, src, it.text || '', fit, bg, it.src || ''].join('|') : '';
+    if (key === pvwKey) {
+      if (pvwVideo && isVid) pvwVideo.loop = it.loop !== false;
+      return;
+    }
+    pvwKey = key;
+    var stage = $('pvwStage');
+    if (pvwVideo) { pvwVideo.removeAttribute('src'); pvwVideo.load(); }
+    stage.innerHTML = ''; pvwVideo = null;
+    stage.style.background = bg;
+    $('pvwEmpty').hidden = !!it;
+    $('pvwPlay').hidden = $('pvwScrub').hidden = true;
+    $('pvwTime').textContent = '';
+    $('pvwStill').hidden = true;
+    pvwForced = false;
+    if (!it) return;
+
+    var kind = it.type === 'default' ? (state.default && state.default.src ? state.default.type : 'blank') : it.type;
+    var node = null;
+    if (kind === 'video') {
+      node = el('video');
+      node.muted = true; node.setAttribute('playsinline', ''); node.autoplay = true;
+      node.loop = it.type === 'default' ? true : it.loop !== false;
+      node.src = src; node.style.objectFit = fit;
+      node.addEventListener('loadedmetadata', function () { if (node === pvwVideo && tooBigToPlay(node)) pvwGoStill('size'); });
+      pvwVideo = node;
+      $('pvwPlay').hidden = $('pvwScrub').hidden = false;
+      $('pvwPlay').textContent = 'Pause';
+    } else if (kind === 'image') {
+      node = el('img'); node.src = src; node.style.objectFit = fit;
+    } else if (kind === 'page') {
+      node = el('iframe'); node.src = it.src;
+    } else if (kind === 'text') {
+      node = el('div', 'text', it.text || '');
+    } else if (kind === 'black') {
+      node = el('div', 'black');
+    }
+    if (node) stage.appendChild(node);
+    if (kind === 'page') $('pvwTime').textContent = 'Web page (sites that block embedding show blank)';
+  }
+
+  $('pvwPlay').onclick = function () {
+    if (!pvwVideo) return;
+    if (pvwVideo.paused) {
+      if (!$('pvwStill').hidden) { pvwForced = true; $('pvwStill').hidden = true; }
+      pvwVideo.play();
+    } else pvwVideo.pause();
+  };
+  $('pvwScrub').addEventListener('input', function () {
+    if (!pvwVideo || !isFinite(pvwVideo.duration)) return;
+    scrubbing = true;
+    pvwVideo.currentTime = this.value / 1000 * pvwVideo.duration;
+  });
+  $('pvwScrub').addEventListener('change', function () { scrubbing = false; });
+  var qualityAt = 0;
+  (function loop(now) {
+    if (pvwVideo && !pvwForced && now - qualityAt > 1000) {
+      qualityAt = now;
+      if (struggling(pvwVideo)) pvwGoStill('slow');
+    }
+    // Runs every frame, so it only touches the page when something it shows has changed.
+    if (pvwVideo && isFinite(pvwVideo.duration)) {
+      var pos = String(Math.round(pvwVideo.currentTime / pvwVideo.duration * 1000));
+      var time = fmtTime(pvwVideo.currentTime) + ' / ' + fmtTime(pvwVideo.duration);
+      var play = pvwVideo.paused ? 'Play' : 'Pause';
+      if (!scrubbing && $('pvwScrub').value !== pos) $('pvwScrub').value = pos;
+      if ($('pvwTime').textContent !== time) $('pvwTime').textContent = time;
+      if ($('pvwPlay').textContent !== play) $('pvwPlay').textContent = play;
+    }
+    requestAnimationFrame(loop);
+  })();
+
+  function paintLoopTog(tog, on) {
+    var b = tog.querySelectorAll('button');
+    for (var i = 0; i < b.length; i++) b[i].classList.toggle('on', (b[i].dataset.loop === '1') === on);
+  }
+  function paintSoundTog(tog, on) {
+    var b = tog.querySelectorAll('button');
+    for (var i = 0; i < b.length; i++) b[i].classList.toggle('on', (b[i].dataset.audio === '1') === on);
+  }
+
+  $('pvwSound').addEventListener('click', function (e) {
+    var s = e.target.dataset && e.target.dataset.audio;
+    if (!s || !state.preview || state.preview.type !== 'video') return;
+    var on = s === '1';
+    if (state.preview.rid && findRow(state.preview.rid)) updateRow(state.preview.rid, { audio: on });
+    else act('/api/preview', { item: Object.assign({}, state.preview, { audio: on }) });
+  });
+
+  $('pvwLoop').addEventListener('click', function (e) {
+    var l = e.target.dataset && e.target.dataset.loop;
+    if (!l || !state.preview || state.preview.type !== 'video') return;
+    var on = l === '1';
+    // A cued rundown row is edited in the rundown (the server re-cues it); anything else is edited in place.
+    if (state.preview.rid && findRow(state.preview.rid)) updateRow(state.preview.rid, { loop: on });
+    else act('/api/preview', { item: Object.assign({}, state.preview, { loop: on }) });
+  });
+
+  // ---------- program ----------
+  $('pgmLoop').addEventListener('click', function (e) {
+    var l = e.target.dataset && e.target.dataset.loop;
+    if (l && state && state.type === 'video') act('/api/show', { loop: l === '1' });
+  });
+  $('pgmSound').addEventListener('click', function (e) {
+    var s = e.target.dataset && e.target.dataset.audio;
+    if (!s || !state || state.type !== 'video') return;
+    var on = s === '1', rid = state.onAir && state.onAir.rid;
+    // An on-air rundown row is changed in the rundown, so a later rundown save doesn't undo it.
+    if (rid && findRow(rid)) updateRow(rid, { audio: on });
+    else act('/api/show', { audio: on });
+  });
+  $('fitSeg').addEventListener('click', function (e) {
+    var f = e.target.dataset && e.target.dataset.fit;
+    if (f) act('/api/show', { fit: f });
+  });
+  var bgTimer;
+  $('bgPick').addEventListener('input', function (e) {
+    clearTimeout(bgTimer);
+    var v = e.target.value;
+    bgTimer = setTimeout(function () { act('/api/show', { bg: v }); }, 120);
+  });
+
+  // The Program monitor's display page marks a video it shows as a still (see display.html).
+  function paintPgmStill() {
+    var v = null;
+    try { v = $('pgmFrame').contentDocument.querySelector('.layer.front video'); } catch (e) {}
+    var why = v ? v.dataset.still : '';
+    var note = $('pgmStill');
+    note.hidden = !why;
+    if (why && note.dataset.for !== v.src + why) { note.dataset.for = v.src + why; note.textContent = stillText(v, why); }
+  }
+
+  function tick() {
+    $('clock').textContent = new Date().toLocaleTimeString([], { hour12: false });
+    paintPgmStill();
+    if (!state) return;
+    var a = state.onAir || {};
+    var elapsed = (serverNow() - state.startedAt) / 1000;
+    var remain = null, loopLeft = null;
+    var src = programSrc();
+    var pos = lastPos && lastPos.src === src && Date.now() - lastPos.at < 3000 ? lastPos : null;
+    if (state.type === 'video' && pos && pos.d) {
+      var t = pos.t + (Date.now() - pos.at) / 1000;
+      if (state.loop !== false) loopLeft = pos.d - (t % pos.d);
+      else remain = Math.max(0, pos.d - t);
+    }
+    if (a.duration) {
+      var r2 = a.duration - elapsed;
+      remain = remain === null ? r2 : Math.min(remain, r2);
+    }
+    var cd = $('cd'), label;
+    if (remain !== null) {
+      cd.textContent = '-' + fmtTime(Math.max(0, remain), true);
+      cd.classList.toggle('crit', remain <= 5);
+      cd.classList.toggle('warn', remain > 5 && remain <= 10);
+      label = 'Remaining · then ' + (a.autoNext ? (state.preview ? 'auto-follow: ' + itemLabel(state.preview) : 'auto-follow (nothing cued!)') : 'default loop');
+    } else {
+      cd.textContent = fmtTime(elapsed);
+      cd.classList.remove('crit', 'warn');
+      label = 'Elapsed' + (loopLeft !== null ? ' · loop restarts in ' + fmtTime(loopLeft, true) : '');
+      if (state.type === 'video' && state.loop !== false && !pos && health.displays) label = 'Elapsed · looping';
+    }
+    if ($('cdLabel').textContent !== label) $('cdLabel').textContent = $('cdLabel').title = label;
+  }
+  setInterval(tick, 200);
+
+  // ---------- transport ----------
+  function blurButtons() { if (document.activeElement && document.activeElement.tagName === 'BUTTON') document.activeElement.blur(); }
+  // A transport button dims while its press is on the way and flashes when the server has it,
+  // so a press that didn't land is obvious.
+  function transport(btn, path, e) {
+    btn.classList.remove('acked');
+    btn.classList.add('sent');
+    api('POST', path, undefined, pressedAt(e)).then(function () {
+      btn.classList.remove('sent');
+      void btn.offsetWidth; // restart the flash on quick repeat presses
+      btn.classList.add('acked');
+      setTimeout(function () { btn.classList.remove('acked'); }, 180);
+    }, function () { btn.classList.remove('sent'); });
+    blurButtons();
+  }
+  // The second click of a double-click is dropped: taken twice, a habitual double-click would
+  // swap and swap straight back, and look as if nothing happened.
+  function doubled(e) { return !!e && e.type === 'click' && e.detail > 1; }
+  function take(e) { if (state && state.preview && !doubled(e)) transport($('btnTake'), '/api/take', e); }
+  function auto(e) { if (state && state.preview && !doubled(e)) transport($('btnAuto'), '/api/auto', e); }
+  function ftb(e) { if (!doubled(e)) transport($('btnFtb'), '/api/ftb', e); }
+  $('btnTake').onclick = take;
+  $('btnAuto').onclick = auto;
+  // FTB is one press, like a hardware switcher's: pressed again it fades back up.
+  $('btnFtb').onclick = ftb;
+  twoTap($('btnSafe'), function () { act('/api/safe'); }, 'Press again: SAFE');
+  $('autoMs').addEventListener('change', function () {
+    act('/api/settings', { autoMs: Number(this.value) });
+    this.blur(); // so Space and Enter go back to TAKE and AUTO
+  });
+
+  // ---------- render state ----------
+  var lastDefault = null;
+  function renderState() {
+    if (!state) return;
+    $('pgmName').textContent = itemLabel(programItem());
+    var isVideo = state.type === 'video';
+    $('pgmLoop').hidden = $('pgmSound').hidden = !isVideo;
+    paintLoopTog($('pgmLoop'), isVideo && state.loop !== false);
+    paintSoundTog($('pgmSound'), isVideo && !!state.audio);
+    var segs = $('fitSeg').querySelectorAll('button');
+    for (var i = 0; i < segs.length; i++) segs[i].classList.toggle('on', segs[i].dataset.fit === state.fit);
+    if (document.activeElement !== $('bgPick')) $('bgPick').value = state.bg || '#000000';
+
+    $('btnTake').disabled = $('btnAuto').disabled = !state.preview;
+    var faded = state.type === 'black' && !!state.ftb;
+    if ($('btnFtb').classList.contains('on') !== faded) {
+      $('btnFtb').classList.toggle('on', faded);
+      $('btnFtb').innerHTML = faded ? 'FTB<small>B · fade back up</small>' : 'FTB<small>B · fade to black</small>';
+    }
+    var sel = $('autoMs'), ms = String(state.autoMs);
+    if (!sel.querySelector('option[value="' + ms + '"]')) sel.appendChild(new Option((state.autoMs / 1000) + 's', ms));
+    if (document.activeElement !== sel) sel.value = ms;
+    var a = state.onAir || {};
+    var nl = $('nextLine');
+    nl.innerHTML = '';
+    if (state.preview) { nl.appendChild(document.createTextNode('Up next: ')); nl.appendChild(el('b', '', itemLabel(state.preview))); }
+    else nl.textContent = 'Nothing cued';
+    if (a.autoNext) nl.appendChild(document.createTextNode(' · auto-follow on'));
+    nl.title = nl.textContent;
+
+    renderPreview();
+
+    var def = state.default && state.default.src ? state.default : null;
+    var defKey = def ? def.type + '|' + def.src : '';
+    if (defKey !== lastDefault) {
+      lastDefault = defKey;
+      var box = $('defThumb');
+      box.innerHTML = '';
+      if (def) box.appendChild(thumbEl(def.type, def.src));
+      $('defName').textContent = def ? nameFromSrc(def.src) : 'No default set';
+    }
+    if (alertSrc && alertSrc !== programSrc() && alertSrc !== previewSrc()) hideAlert();
+    renderTags();
+    paintRundown();
+  }
+
+  function renderHealth() {
+    var n = health.displays;
+    $('obsDot').className = 'dot' + (n === 1 ? ' ok' : n > 1 ? ' warn' : '');
+    $('obsText').textContent = n === 0 ? 'OBS display: not connected' : n === 1 ? 'OBS display: connected' : 'OBS display: ' + n + ' connected';
+    $('obsPill').title = n === 0 ? 'No /display page is connected. Check the OBS browser source.'
+      : n > 1 ? 'More than one /display page is open. Close extra browser tabs so only OBS is connected.'
+      : 'The OBS browser source is connected.';
+  }
+
+  function showAlert(src, msg) {
+    alertSrc = src;
+    $('alertText').textContent = '⚠ ' + msg + ': ' + nameFromSrc(src);
+    $('alert').hidden = false;
+  }
+  function hideAlert() { alertSrc = ''; $('alert').hidden = true; }
+  $('alertClose').onclick = hideAlert;
+
+  function onPos(p) {
+    if (p.err) {
+      bad[p.src] = p.err;
+      if (p.src === programSrc() || p.src === previewSrc()) showAlert(p.src, p.err);
+      renderTags();
+      return;
+    }
+    lastPos = { src: p.src, t: p.t, d: p.d, at: Date.now() };
+  }
+
+  // ---------- rundown ----------
+  var builtRundown = '';
+  function activeRd() {
+    if (!rundowns) return null;
+    for (var i = 0; i < rundowns.list.length; i++) if (rundowns.list[i].id === rundowns.active) return rundowns.list[i];
+    return rundowns.list[0] || null;
+  }
+  function findRow(id) {
+    var rd = activeRd();
+    if (!rd) return null;
+    for (var i = 0; i < rd.items.length; i++) if (rd.items[i].id === id) return rd.items[i];
+    return null;
+  }
+  function loadRundowns() {
+    return api('GET', '/api/rundowns').then(setRundowns).catch(function () {});
+  }
+  function setRundowns(r) {
+    rundowns = r;
+    var sel = $('rdSelect');
+    sel.innerHTML = '';
+    r.list.forEach(function (x) { sel.appendChild(new Option(x.name + ' (' + x.items.length + ')', x.id)); });
+    sel.value = r.active;
+    $('rdDelete').disabled = r.list.length < 2;
+    var rd = activeRd();
+    var sig = JSON.stringify(rd);
+    if (sig !== builtRundown) { builtRundown = sig; buildRundown(); }
+  }
+  function saveItems(items) {
+    var rd = activeRd();
+    if (!rd) return;
+    rd.items = items;
+    builtRundown = JSON.stringify(rd);
+    buildRundown();
+    api('POST', '/api/rundowns', { action: 'save', id: rd.id, items: items }).then(setRundowns).catch(loadRundowns);
+  }
+  function updateRow(id, patch) {
+    var rd = activeRd();
+    if (!rd) return;
+    saveItems(rd.items.map(function (r) { return r.id === id ? Object.assign({}, r, patch) : r; }));
+  }
+  function appendItem(it) {
+    var rd = activeRd();
+    if (rd) saveItems(rd.items.concat([it]));
+  }
+  function mediaItem(m) { return { id: newId(), type: m.type, src: m.src, loop: true }; }
+  function cueRow(row) { act('/api/preview', { item: Object.assign({}, row, { rid: row.id }) }); }
+
+  function rowThumb(row) {
+    var t = el('div', 'rthumb');
+    if ((row.type === 'video' || row.type === 'image') && row.src) t.appendChild(thumbEl(row.type, row.src));
+    else if (row.type === 'black') { t.style.background = '#000'; t.textContent = 'BLACK'; }
+    else t.textContent = TYPE_BADGE[row.type] || '';
+    return t;
+  }
+
+  function buildRundown() {
+    var list = $('rdList');
+    list.innerHTML = '';
+    var rd = activeRd();
+    if (!rd || !rd.items.length) {
+      list.appendChild(el('div', 'empty-list', 'Rundown is empty. Add items below, or drag them in from the library.'));
+      return;
+    }
+    rd.items.forEach(function (row, i) { list.appendChild(buildRow(row, i)); });
+    paintRundown();
+  }
+
+  function buildRow(row, i) {
+    var r = el('div', 'rdrow');
+    r.dataset.id = row.id;
+
+    var h = el('div', 'handle', '⋮⋮');
+    h.title = 'Drag to reorder';
+    h.addEventListener('mousedown', function () { r.draggable = true; });
+    h.addEventListener('mouseup', function () { r.draggable = false; });
+    r.addEventListener('dragstart', function (e) {
+      e.dataTransfer.setData('application/x-wall-row', String(i));
+      e.dataTransfer.effectAllowed = 'move';
+      r.classList.add('dragging');
+    });
+    r.addEventListener('dragend', function () { r.draggable = false; r.classList.remove('dragging'); clearDropMarks(); });
+    r.appendChild(h);
+    r.appendChild(el('div', 'num', String(i + 1)));
+    r.appendChild(rowThumb(row));
+
+    var title = el('div', 'title');
+    var name = el('div', 'name', itemLabel(row));
+    name.title = 'Double-click to rename';
+    name.addEventListener('dblclick', function (e) {
+      e.stopPropagation();
+      var inp = el('input');
+      inp.type = 'text'; inp.value = row.label || ''; inp.placeholder = itemLabel(Object.assign({}, row, { label: '' }));
+      name.innerHTML = ''; name.appendChild(inp); inp.focus(); inp.select();
+      var done = false;
+      var finish = function (save) {
+        if (done) return; done = true;
+        if (save && inp.value.trim() !== (row.label || '')) updateRow(row.id, { label: inp.value.trim() });
+        else buildRundown();
+      };
+      inp.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') finish(true);
+        if (ev.key === 'Escape') finish(false);
+      });
+      inp.addEventListener('blur', function () { finish(true); });
+    });
+    title.appendChild(name);
+    var sub = TYPE_NAMES[row.type] || row.type;
+    if (row.label && row.src) sub += ' · ' + nameFromSrc(row.src);
+    else if (row.type === 'page') sub += ' · ' + row.src;
+    if (row.notes) sub += ' · ' + row.notes;
+    title.appendChild(el('div', 'sub', sub));
+    r.appendChild(title);
+
+    var dur = el('input', 'dur');
+    dur.type = 'number'; dur.min = '0'; dur.step = '1'; dur.placeholder = '–';
+    dur.value = row.duration || '';
+    dur.title = 'Hold time in seconds. When it runs out the item ends (auto-follow, or back to the default loop). Leave empty to hold until you take something else.';
+    dur.addEventListener('change', function () { updateRow(row.id, { duration: dur.value === '' ? null : Number(dur.value) }); });
+    r.appendChild(dur);
+
+    if (row.type === 'video') {
+      var once = row.loop === false;
+      var mode = el('button', once ? 'on' : '', once ? 'ONCE' : 'LOOP');
+      mode.title = 'Click to switch between looping and playing once';
+      mode.onclick = function (e) { e.stopPropagation(); updateRow(row.id, { loop: once }); };
+      r.appendChild(mode);
+      var snd = el('button', 'snd' + (row.audio ? ' on' : ''), row.audio ? 'SOUND' : 'MUTED');
+      snd.title = row.audio ? 'Plays with sound on the wall. Click to mute' : 'Silent on the wall. Click to play its sound';
+      snd.onclick = function (e) { e.stopPropagation(); updateRow(row.id, { audio: !row.audio }); };
+      r.appendChild(snd);
+    } else {
+      r.appendChild(el('span', 'muted', '–'));
+      r.appendChild(el('span', 'muted', '–'));
+    }
+
+    var af = el('button', 'af' + (row.autoNext ? ' on' : ''), row.autoNext ? 'AF' : '·');
+    af.title = 'Auto-follow: when this item ends, automatically take what is in Preview (normally the next row)';
+    af.onclick = function (e) { e.stopPropagation(); updateRow(row.id, { autoNext: !row.autoNext }); };
+    r.appendChild(af);
+
+    r.appendChild(el('div', 'st'));
+
+    var rm = el('button', 'danger', '✕');
+    rm.title = 'Remove from rundown';
+    twoTap(rm, function () {
+      var rd = activeRd();
+      saveItems(rd.items.filter(function (x) { return x.id !== row.id; }));
+    }, '?');
+    r.appendChild(rm);
+
+    r.addEventListener('click', function (e) {
+      if (e.target.closest('button, input')) return;
+      cueRow(row);
+    });
+    return r;
+  }
+
+  function mediaExists(src) {
+    if (!src || src.indexOf('/media/') !== 0 || !media.loaded) return true;
+    return media.some(function (m) { return m.src === src; });
+  }
+
+  // Tally colours and status on existing rows (no rebuild, so thumbnails don't flicker).
+  function paintRundown() {
+    if (!state) return;
+    var rows = $('rdList').querySelectorAll('.rdrow');
+    var a = state.onAir || {};
+    var onIdx = -1;
+    for (var i = 0; i < rows.length; i++) if (rows[i].dataset.id === a.rid) onIdx = i;
+    for (var j = 0; j < rows.length; j++) {
+      var id = rows[j].dataset.id, row = findRow(id);
+      var onair = id === a.rid, cued = !!state.preview && state.preview.rid === id;
+      var missing = row && !mediaExists(row.src);
+      rows[j].classList.toggle('onair', onair);
+      rows[j].classList.toggle('cued', cued && !onair);
+      rows[j].classList.toggle('past', onIdx >= 0 && j < onIdx);
+      var st = rows[j].querySelector('.st');
+      st.className = 'st' + (onair ? ' onair' : cued ? ' cued' : missing ? ' missing' : '');
+      st.textContent = onair ? 'ON AIR' : cued ? 'PVW' : missing ? 'MISSING' : '';
+      st.title = missing ? 'This file is no longer in the library' : '';
+    }
+  }
+
+  // Drag to reorder, or drag library items in.
+  var rdList = $('rdList');
+  function clearDropMarks() {
+    rdList.classList.remove('drop-empty');
+    Array.prototype.forEach.call(rdList.querySelectorAll('.drop-before, .drop-after'), function (x) { x.classList.remove('drop-before', 'drop-after'); });
+  }
+  function dropIndex(y) {
+    var rows = rdList.querySelectorAll('.rdrow');
+    for (var i = 0; i < rows.length; i++) {
+      var b = rows[i].getBoundingClientRect();
+      if (y < b.top + b.height / 2) return i;
+    }
+    return rows.length;
+  }
+  rdList.addEventListener('dragover', function (e) {
+    var isRow = hasType(e.dataTransfer, 'application/x-wall-row');
+    if (!isRow && !hasType(e.dataTransfer, 'application/x-wall-media')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = isRow ? 'move' : 'copy';
+    clearDropMarks();
+    var rows = rdList.querySelectorAll('.rdrow'), at = dropIndex(e.clientY);
+    if (!rows.length) rdList.classList.add('drop-empty');
+    else if (at < rows.length) rows[at].classList.add('drop-before');
+    else rows[rows.length - 1].classList.add('drop-after');
+  });
+  rdList.addEventListener('dragleave', function (e) { if (!rdList.contains(e.relatedTarget)) clearDropMarks(); });
+  rdList.addEventListener('drop', function (e) {
+    var rd = activeRd();
+    if (!rd) return;
+    e.preventDefault();
+    var at = dropIndex(e.clientY);
+    clearDropMarks();
+    var items = rd.items.slice();
+    var from = e.dataTransfer.getData('application/x-wall-row');
+    if (from !== '') {
+      from = Number(from);
+      if (at > from) at--;
+      if (at === from) return;
+      var moved = items.splice(from, 1)[0];
+      items.splice(at, 0, moved);
+    } else {
+      var m;
+      try { m = JSON.parse(e.dataTransfer.getData('application/x-wall-media')); } catch (err) { return; }
+      if (!m) return;
+      items.splice(at, 0, mediaItem(m));
+    }
+    saveItems(items);
+  });
+
+  $('rdSelect').addEventListener('change', function () { act('/api/rundowns', { action: 'activate', id: this.value }); });
+  $('rdNew').onclick = function () {
+    var name = window.prompt('Name for the new rundown:', 'Show ' + ((rundowns ? rundowns.list.length : 0) + 1));
+    if (name) act('/api/rundowns', { action: 'create', name: name });
+  };
+  $('rdRename').onclick = function () {
+    var rd = activeRd();
+    if (!rd) return;
+    var name = window.prompt('Rename rundown:', rd.name);
+    if (name) act('/api/rundowns', { action: 'rename', id: rd.id, name: name });
+  };
+  twoTap($('rdDelete'), function () {
+    var rd = activeRd();
+    if (rd) act('/api/rundowns', { action: 'delete', id: rd.id });
+  }, 'Delete rundown?');
+
+  var ADD_HINT = { page: 'https://… or example.com', video: 'https://…/clip.mp4', image: 'https://…/picture.png', text: 'Text for the wall…' };
+  $('addKind').addEventListener('change', function () { $('addValue').placeholder = ADD_HINT[this.value]; });
+  $('addBtn').onclick = function () {
+    var kind = $('addKind').value, v = $('addValue').value.trim();
+    if (!v) return toast('Enter a URL or text first', true);
+    var it = { id: newId(), type: kind };
+    if (kind === 'text') it.text = v; else it.src = v;
+    if (kind === 'video') it.loop = true;
+    appendItem(it);
+    $('addValue').value = '';
+  };
+  $('addValue').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('addBtn').click(); });
+  $('addBlack').onclick = function () { appendItem({ id: newId(), type: 'black' }); };
+  $('addDefault').onclick = function () { appendItem({ id: newId(), type: 'default' }); };
+
+  // ---------- as-run ----------
+  var asrunList = [];
+  function loadAsrun() {
+    api('GET', '/api/asrun').then(function (l) { asrunList = l; renderAsrun(); }).catch(function () {});
+  }
+  function renderAsrun() {
+    var box = $('asrun');
+    box.innerHTML = '';
+    if (!asrunList.length) { box.appendChild(el('span', 'muted', 'Nothing aired since the server started.')); return; }
+    asrunList.slice(-60).reverse().forEach(function (e) {
+      var d = el('div');
+      d.appendChild(el('span', '', new Date(e.at).toLocaleTimeString([], { hour12: false })));
+      d.appendChild(el('span', 'a', e.action));
+      var l = el('span', 'l', e.label);
+      l.title = e.label + (e.src && e.src !== e.label ? ' · ' + e.src : '');
+      d.appendChild(l);
+      box.appendChild(d);
+    });
+  }
+  $('asrunCsv').href = keyed('/api/asrun.csv');
+
+  // ---------- library ----------
+  var cards = {}; // name -> card element
+
+  function loadMedia() {
+    return api('GET', '/api/media').then(function (list) {
+      media = list;
+      media.loaded = true;
+      renderLibrary();
+      paintRundown();
+    }).catch(function () {});
+  }
+
+  function renderLibrary() {
+    var grid = $('grid');
+    var seen = {};
+    var q = $('libSearch').value.trim().toLowerCase();
+    if (!media.length) {
+      grid.innerHTML = '<div class="muted">No media yet. Upload some above.</div>';
+      cards = {};
+      return;
+    }
+    var empty = grid.querySelector('.muted'); if (empty) empty.remove();
+    media.forEach(function (m, idx) {
+      seen[m.name] = true;
+      var card = cards[m.name];
+      if (!card) { card = buildCard(m); cards[m.name] = card; }
+      card.hidden = !!q && m.name.toLowerCase().indexOf(q) < 0;
+      if (grid.children[idx] !== card) grid.insertBefore(card, grid.children[idx] || null);
+    });
+    Object.keys(cards).forEach(function (n) {
+      if (!seen[n]) { cards[n].remove(); delete cards[n]; }
+    });
+    renderTags();
+  }
+  $('libSearch').addEventListener('input', renderLibrary);
+
+  function markBad(src, reason) {
+    bad[src] = reason;
+    renderTags();
+  }
+
+  function buildCard(m) {
+    var card = el('div', 'card');
+    card.dataset.src = m.src;
+
+    var th = el('div', 'thumb');
+    th.title = 'Click to cue in Preview · drag into the rundown';
+    th.draggable = true;
+    th.addEventListener('dragstart', function (e) {
+      e.dataTransfer.setData('application/x-wall-media', JSON.stringify({ type: m.type, src: m.src }));
+      e.dataTransfer.effectAllowed = 'copy';
+    });
+    var dur = m.type === 'video' ? el('div', 'dur', '…') : null;
+    th.appendChild(thumbEl(m.type, m.src, function (info) {
+      if (dur) dur.textContent = info.duration ? fmtTime(info.duration) : '?';
+      if (info.bad) markBad(m.src, info.bad);
+    }));
+    th.appendChild(el('div', 'tags'));
+    if (dur) th.appendChild(dur);
+    th.addEventListener('click', function () {
+      var it = { type: m.type, src: m.src };
+      if (m.type === 'video') it.loop = true;
+      act('/api/preview', { item: it });
+    });
+    card.appendChild(th);
+
+    var meta = el('div', 'meta', m.name);
+    meta.title = m.name + ' · ' + fmtSize(m.size);
+    card.appendChild(meta);
+
+    var actions = el('div', 'actions');
+    var bAdd = el('button', '', '+ Rundown');
+    bAdd.title = 'Add to the end of the rundown';
+    bAdd.onclick = function () { appendItem(mediaItem(m)); toast('Added ' + m.name); };
+    var bDef = el('button', 'setdef', 'Default');
+    bDef.title = 'Make this the default loop';
+    twoTap(bDef, function () {
+      api('POST', '/api/default', { src: m.src }).then(function () { toast('Default loop: ' + m.name); }).catch(function () {});
+    }, 'Sure?');
+    var bDel = el('button', 'danger', 'Delete');
+    twoTap(bDel, function () {
+      bDel.disabled = true;
+      api('DELETE', '/api/media?name=' + encodeURIComponent(m.name)).then(function () {
+        toast('Deleted ' + m.name);
+        loadMedia();
+      }).catch(function () { bDel.disabled = false; });
+    }, 'Sure?');
+    actions.appendChild(bAdd); actions.appendChild(bDef); actions.appendChild(bDel);
+    card.appendChild(actions);
+    return card;
+  }
+
+  function renderTags() {
+    if (!state) return;
+    var pgm = programSrc(), pvw = previewSrc();
+    var defSrc = state.default && state.default.src ? state.default.src : '';
+    Object.keys(cards).forEach(function (n) {
+      var card = cards[n], src = card.dataset.src;
+      var isPgm = src === pgm, isPvw = src === pvw, isDef = src === defSrc;
+      card.classList.toggle('pgm', isPgm);
+      card.classList.toggle('pvw', isPvw && !isPgm);
+      var tags = card.querySelector('.tags');
+      tags.innerHTML = '';
+      if (isPgm) tags.appendChild(el('span', 'tag pgm', 'PGM'));
+      if (isPvw) tags.appendChild(el('span', 'tag pvw', 'PVW'));
+      if (isDef) tags.appendChild(el('span', 'tag def', 'DEFAULT'));
+      if (bad[src]) { var t = el('span', 'tag bad', "WON'T PLAY"); t.title = bad[src]; tags.appendChild(t); }
+      var b = card.querySelector('.setdef');
+      b.disabled = isDef;
+      if (!b.classList.contains('armed')) b.textContent = isDef ? 'Default ✓' : 'Default';
+    });
+  }
+
+  // ---------- uploads ----------
+  var ALLOWED = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'mp4', 'webm', 'mov'];
+  function uploadFiles(files) {
+    Array.prototype.forEach.call(files, uploadOne);
+  }
+  function uploadOne(file) {
+    var row = el('div', 'up');
+    row.innerHTML = '<div class="name"><span></span><span class="pct">0%</span></div><div class="bar"><i></i></div>';
+    row.querySelector('.name span').textContent = file.name;
+    $('uploads').appendChild(row);
+    var pct = row.querySelector('.pct'), bar = row.querySelector('.bar i');
+    var finish = function (cls, text) {
+      row.classList.add(cls); pct.textContent = text;
+      setTimeout(function () { row.remove(); }, cls === 'err' ? 6000 : 1500);
+    };
+
+    var ext = (file.name.split('.').pop() || '').toLowerCase();
+    if (ALLOWED.indexOf(ext) < 0) { bar.style.width = '100%'; return finish('err', 'Unsupported type'); }
+
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload');
+    xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+    if (KEY) xhr.setRequestHeader('X-Key', KEY);
+    xhr.upload.onprogress = function (e) {
+      if (!e.lengthComputable) return;
+      var p = Math.round(e.loaded / e.total * 100);
+      bar.style.width = p + '%'; pct.textContent = p + '%';
+    };
+    xhr.onload = function () {
+      var res = {}; try { res = JSON.parse(xhr.responseText); } catch (e) {}
+      if (xhr.status >= 200 && xhr.status < 300) {
+        bar.style.width = '100%'; finish('done', 'Done');
+        loadMedia();
+      } else {
+        bar.style.width = '100%'; finish('err', res.error || ('Error ' + xhr.status));
+      }
+    };
+    xhr.onerror = function () { bar.style.width = '100%'; finish('err', 'Network error'); };
+    xhr.send(file);
+  }
+
+  var drop = $('drop'), fileInput = $('fileInput');
+  drop.addEventListener('click', function () { fileInput.click(); });
+  fileInput.addEventListener('change', function () { uploadFiles(fileInput.files); fileInput.value = ''; });
+  // Files can be dropped anywhere on the library panel, not just on the drop zone.
+  var libPanel = $('libraryPanel');
+  function dropOver(on) { libPanel.classList.toggle('dropping', on); drop.classList.toggle('over', on); }
+  ['dragenter', 'dragover'].forEach(function (ev) {
+    libPanel.addEventListener(ev, function (e) {
+      if (locked || !hasType(e.dataTransfer, 'Files')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      dropOver(true);
+    });
+  });
+  libPanel.addEventListener('dragleave', function (e) { if (!libPanel.contains(e.relatedTarget)) dropOver(false); });
+  libPanel.addEventListener('drop', function (e) {
+    if (!hasType(e.dataTransfer, 'Files')) return;
+    e.preventDefault();
+    dropOver(false);
+    if (!locked && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+  });
+  // Don't let a missed file drop navigate away from the page
+  window.addEventListener('dragover', function (e) { if (hasType(e.dataTransfer, 'Files')) e.preventDefault(); });
+  window.addEventListener('drop', function (e) { if (hasType(e.dataTransfer, 'Files')) e.preventDefault(); });
+
+  // ---------- OBS URL ----------
+  api('GET', '/api/info').then(function (info) {
+    $('obsUrl').value = info.displayUrl;
+    if (info.lanDisplayUrls.length) $('obsLan').textContent = 'OBS on another PC: ' + info.lanDisplayUrls.join(' or ');
+  }).catch(function () {});
+  $('obsUrl').addEventListener('focus', function () { this.select(); });
+  $('btnCopyObs').onclick = function () {
+    var input = $('obsUrl'), text = input.value;
+    var fallback = function () {
+      // Clipboard API needs https or localhost; the phone over LAN gets this path.
+      input.focus(); input.select();
+      try { document.execCommand('copy') ? toast('Copied') : toast('Select the URL and copy it', true); }
+      catch (e) { toast('Select the URL and copy it', true); }
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () { toast('Copied'); }, fallback);
+    } else fallback();
+  };
+
+  // ---------- lock & keyboard ----------
+  var locked = false;
+  try { locked = localStorage.getItem('ws-locked') === '1'; } catch (e) {}
+  function applyLock() {
+    document.body.classList.toggle('locked', locked);
+    $('btnLock').classList.toggle('on', locked);
+    $('btnLock').textContent = locked ? 'LOCKED · click to unlock' : 'Lock';
+    if (locked) disarmAll();
+  }
+  $('btnLock').onclick = function () {
+    locked = !locked;
+    try { localStorage.setItem('ws-locked', locked ? '1' : '0'); } catch (e) {}
+    applyLock();
+    blurButtons();
+  };
+  applyLock();
+
+  // Fields being typed in keep their keys. Everywhere else (including a slider or colour picker
+  // that still has focus after use) Space, Enter, B and the arrows drive the switcher.
+  function isTyping(t) {
+    if (!t) return false;
+    if (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT') return true;
+    return t.tagName === 'INPUT' && !/^(range|color|checkbox|radio|button|submit|reset|file)$/i.test(t.type);
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { disarmAll(); return; }
+    if (locked || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    if (isTyping(e.target)) return;
+    switch (e.key) {
+      case ' ': e.preventDefault(); take(e); break;
+      case 'Enter': e.preventDefault(); auto(e); break;
+      case 'ArrowDown': e.preventDefault(); api('POST', '/api/next', undefined, pressedAt(e)).catch(function () {}); break;
+      case 'ArrowUp': e.preventDefault(); api('POST', '/api/prev', undefined, pressedAt(e)).catch(function () {}); break;
+      case 'b': case 'B': e.preventDefault(); ftb(e); break;
+    }
+  });
+  // Choosing from a list leaves focus on it, where Space and Enter would open it again.
+  ['rdSelect', 'addKind'].forEach(function (id) { $(id).addEventListener('change', function () { this.blur(); }); });
+  // A focused button would otherwise also "click" on Space keyup.
+  document.addEventListener('keyup', function (e) {
+    if (e.key === ' ' && e.target && e.target.tagName === 'BUTTON') e.preventDefault();
+  });
+
+  // ---------- live updates ----------
+  // Two connections: the event stream brings state, the command socket takes presses.
+  var sseOk = false;
+  function renderConn() {
+    var cmdOk = !!sock && sock.readyState === 1;
+    $('srvDot').className = 'dot' + (sseOk && cmdOk ? ' ok' : sseOk ? ' warn' : '');
+    $('srvText').textContent = !sseOk ? 'Server: reconnecting…' : cmdOk ? 'Server' : 'Server: commands not connected';
+    // The page reaches the server but its command socket never opens: an older server.js is
+    // still running. Presses then fall back to plain HTTP, where they can be held up.
+    var old = sseOk && !cmdOk && sockFails >= 3;
+    $('srvAlert').hidden = !old;
+  }
+  function connect() {
+    var es = new EventSource('/events?role=control');
+    es.onopen = function () {
+      sseOk = true;
+      renderConn();
+      loadMedia(); loadRundowns(); loadAsrun();
+    };
+    es.onerror = function () {
+      sseOk = false;
+      renderConn();
+    };
+    es.onmessage = function (e) {
+      try { state = JSON.parse(e.data); } catch (err) { return; }
+      // Until the command socket has measured the clock, estimate it from the event stream.
+      if (state.now && !clockSamples.length) clockOffset = state.now - Date.now();
+      if (!sseOk) { sseOk = true; renderConn(); }
+      renderState();
+    };
+    es.addEventListener('media', function () { loadMedia(); });
+    es.addEventListener('rundowns', function () { loadRundowns(); });
+    es.addEventListener('asrun', function (e) {
+      try { asrunList.push(JSON.parse(e.data)); } catch (err) { return; }
+      if (asrunList.length > 200) asrunList.shift();
+      renderAsrun();
+    });
+    es.addEventListener('health', function (e) {
+      try { health = JSON.parse(e.data); } catch (err) { return; }
+      renderHealth();
+    });
+    es.addEventListener('pos', function (e) {
+      try { onPos(JSON.parse(e.data)); } catch (err) {}
+    });
+  }
+  renderHealth();
+  connect();
+})();
+</script>
+</body>
+</html>

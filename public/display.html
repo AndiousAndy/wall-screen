@@ -1,0 +1,551 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>wall-screen display</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 1920px; height: 1080px;
+    overflow: hidden; background: #000; cursor: none;
+  }
+  .layer {
+    position: absolute; inset: 0; width: 1920px; height: 1080px;
+    opacity: 0; transition: opacity 0.6s ease;
+  }
+  .layer.front { opacity: 1; z-index: 2; }
+  .layer > img, .layer > video, .layer > iframe, .layer > .black {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    border: 0; display: block; background: transparent;
+  }
+  .layer > .black { background: #000; }
+  .layer > .text {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 80px; box-sizing: border-box; color: #fff; text-align: center;
+    font: 700 110px/1.15 "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+</style>
+</head>
+<body>
+<div class="layer front" id="layerA"></div>
+<div class="layer" id="layerB"></div>
+<script>
+(function () {
+  // Replaced by the server with a hash of this file. When the server reports a different
+  // hash, this page is out of date and reloads itself (OBS never needs a manual refresh).
+  var VERSION = '__DISPLAY_VERSION__';
+
+  // The control page embeds /display?preview=1. A preview follows the OBS display's
+  // playback position instead of playing on its own clock, and never ends a video early.
+  var isPreview = /[?&]preview=1(&|$)/.test(location.search);
+  var layers = [document.getElementById('layerA'), document.getElementById('layerB')];
+  var front = 0;
+  var shownKey = null;
+  var token = 0;
+  var pending = false; // a take is waiting for its media before it goes on screen
+  var current = null;
+  var cleanupTimer = null;
+
+  // Persistent, preloaded default element so returning to default is instant.
+  var defaultEl = null;
+  var defaultSrc = '';
+
+  // Media elements kept off screen, ready to go on air at once: the item cued in Preview
+  // (preloaded) and what last went off air (so TAKE can swap straight back). Previews (the
+  // control page's Program monitor) don't preload, but do keep what went off air.
+  var parked = []; // { key, el }, oldest first
+  var MAX_PARKED = isPreview ? 2 : 3;
+
+  function post(path, body) {
+    if (isPreview) return;
+    try {
+      fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }).catch(function () {});
+    } catch (e) {}
+  }
+
+  // ---------- media held in memory ----------
+  // Files are fetched once and played from memory (blob: URLs). A take then never waits on the
+  // network, and a video doesn't hold one of the browser's six connections to the server for as
+  // long as it exists (a video streaming from the server keeps its request open while it buffers
+  // ahead, which can leave no connection for anything else). Bigger files stream as before.
+  // The control page's Program monitor does this only on the server's own computer: a phone or
+  // tablet on Wi-Fi would download every file on air in full.
+  var BLOB_MAX = 300 * 1024 * 1024;
+  var BLOB_TOTAL = (isPreview ? 600 : 1500) * 1024 * 1024;
+  var BLOBS_OK = !isPreview || /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  var blobs = {}; // src -> { url, size, used, waiters, stream }
+
+  // Calls cb with a blob: URL for src, or '' when it should stream from the server instead.
+  function cacheMedia(src, cb) {
+    var b = blobs[src];
+    if (b) {
+      b.used = Date.now();
+      if (b.url || b.stream) cb(b.url); else b.waiters.push(cb);
+      return;
+    }
+    if (!BLOBS_OK || src.indexOf('/media/') !== 0 || !window.fetch || !window.URL || !URL.createObjectURL) return cb('');
+    b = blobs[src] = { url: '', size: 0, used: Date.now(), waiters: [cb], stream: false };
+    var ctl = window.AbortController ? new AbortController() : null;
+    fetch(src, ctl ? { signal: ctl.signal } : undefined).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (Number(r.headers.get('content-length')) > BLOB_MAX) { b.stream = true; if (ctl) ctl.abort(); return null; }
+      return r.blob();
+    }).then(function (blob) {
+      if (blob) { b.size = blob.size; b.url = URL.createObjectURL(blob); trimBlobs(false); }
+    }, function () {
+      if (!b.stream) delete blobs[src]; // try again next time
+    }).then(function () {
+      var w = b.waiters;
+      b.waiters = [];
+      w.forEach(function (f) { f(b.url); });
+    });
+  }
+
+  function urlsInUse() {
+    var urls = {};
+    var add = function (el) { if (el && el.getAttribute && el.getAttribute('src')) urls[el.getAttribute('src')] = true; };
+    layers.forEach(function (l) { Array.prototype.forEach.call(l.children, add); });
+    parked.forEach(function (p) { add(p.el); });
+    add(defaultEl);
+    return urls;
+  }
+
+  // Frees in-memory copies nothing shows or keeps parked: oldest first while over budget,
+  // or all of them.
+  function trimBlobs(all) {
+    var used = urlsInUse(), total = 0;
+    Object.keys(blobs).forEach(function (k) { total += blobs[k].size; });
+    Object.keys(blobs)
+      .filter(function (k) { return blobs[k].url && !used[blobs[k].url]; })
+      .sort(function (a, b) { return blobs[a].used - blobs[b].used; })
+      .forEach(function (k) {
+        if (!all && total <= BLOB_TOTAL) return;
+        URL.revokeObjectURL(blobs[k].url);
+        total -= blobs[k].size;
+        delete blobs[k];
+      });
+  }
+
+  // A file was deleted (src), or the library changed in a way the server didn't spell out (no
+  // src): drop the copies and parked elements that may be stale, so a file uploaded again under
+  // the same name isn't played from the old copy.
+  function forgetMedia(src) {
+    var keep = cueKey(current && current.preview);
+    parked = parked.filter(function (p) {
+      if (src ? p.el.dataset.src !== src : p.key === keep) return true;
+      release(p.el);
+      return false;
+    });
+    if (!src) return trimBlobs(true);
+    var b = blobs[src];
+    if (!b) return;
+    delete blobs[src];
+    if (b.url && !urlsInUse()[b.url]) URL.revokeObjectURL(b.url); // else leave it to the element using it
+  }
+
+  // ---------- media elements ----------
+  function release(el) {
+    if (!el || el.parentNode) return;
+    el.released = true;
+    el.removeAttribute('src');
+    if (el.tagName === 'VIDEO') el.load();
+  }
+
+  function setSrc(el, url) {
+    el.src = url;
+    if (el.tagName === 'VIDEO') el.load();
+  }
+
+  // An element still waiting for its in-memory copy streams from the server instead.
+  function ensureSrc(el) {
+    if (el && !el.getAttribute('src') && el.dataset.src) setSrc(el, el.dataset.src);
+  }
+
+  // wait: true to load from the in-memory copy once it has been fetched (preloads), false to
+  // start streaming at once (going on air now) and keep a copy for next time.
+  function makeMedia(kind, src, loop, wait) {
+    var el = document.createElement(kind === 'video' ? 'video' : 'img');
+    el.dataset.src = src; // the file; el.src may be a blob: URL holding it
+    if (kind === 'video') {
+      el.muted = true; el.defaultMuted = true;
+      el.setAttribute('muted', ''); el.setAttribute('playsinline', '');
+      el.preload = 'auto';
+      el.loop = !!loop;
+    } else {
+      el.decoding = 'async';
+    }
+    el.addEventListener('error', function () {
+      if (el.released || !el.getAttribute('src')) return;
+      post('/api/position', { src: src, err: kind === 'video' ? 'OBS could not play this video (format/codec?)' : 'OBS could not load this image' });
+    });
+    var b = blobs[src];
+    if (b && b.url) {
+      b.used = Date.now();
+      setSrc(el, b.url);
+    } else if (wait) {
+      cacheMedia(src, function (url) { if (!el.released && !el.getAttribute('src')) setSrc(el, url || src); });
+    } else {
+      setSrc(el, src);
+      // Once the copy is in memory, a video that has gone off air in the meantime moves to it
+      // (one on air carries on streaming rather than restart).
+      cacheMedia(src, function (url) {
+        if (url && kind === 'video' && !el.parentNode && !el.released && el.getAttribute('src') === src) setSrc(el, url);
+      });
+    }
+    return el;
+  }
+
+  function isMedia(el) { return !!el && (el.tagName === 'VIDEO' || el.tagName === 'IMG') && !!el.dataset.src; }
+  function elKey(el) { return (el.tagName === 'VIDEO' ? 'video' : 'image') + '|' + el.dataset.src; }
+  function cueKey(item) {
+    return item && (item.type === 'video' || item.type === 'image') && item.src ? item.type + '|' + item.src : '';
+  }
+
+  // Keeps el off screen, silent and rewound, so it starts at once when it is taken.
+  function park(el) {
+    var key = elKey(el);
+    release(unpark(key)); // one per file
+    if (el.tagName === 'VIDEO') {
+      el.pause();
+      setSound(el, false, 0);
+      delete el.dataset.still;
+      var b = blobs[el.dataset.src];
+      // Still streaming from the server (it went on air before its copy was in memory):
+      // switch it to the copy while it's off air, so it stops holding a connection.
+      if (b && b.url && el.getAttribute('src') !== b.url) setSrc(el, b.url);
+      else try { if (el.currentTime > 0) el.currentTime = 0; } catch (e) {}
+    }
+    parked.push({ key: key, el: el });
+    var keep = cueKey(current && current.preview);
+    for (var i = 0; parked.length > MAX_PARKED && i < parked.length;) {
+      if (parked[i].key === keep) i++;
+      else release(parked.splice(i, 1)[0].el);
+    }
+  }
+
+  function unpark(key) {
+    for (var i = parked.length - 1; i >= 0; i--) {
+      if (parked[i].key === key) return parked.splice(i, 1)[0].el;
+    }
+    return null;
+  }
+
+  function preloadDefault(def) {
+    if (isPreview) return;
+    var src = def && def.src ? def.src : '';
+    var type = def && def.type ? def.type : 'video';
+    if (src + '|' + type === defaultSrc) return;
+    defaultSrc = src + '|' + type;
+    release(defaultEl);
+    defaultEl = null;
+    if (!src) return;
+    defaultEl = makeMedia(type, src, true, true);
+  }
+
+  // Has an element ready off screen for the item cued in Preview, so TAKE doesn't wait for it.
+  function preloadCued(item) {
+    var key = cueKey(item);
+    if (!key || isPreview) return;
+    for (var i = 0; i < parked.length; i++) if (parked[i].key === key) return;
+    // Going off air now (the swap of a TAKE): it is parked when it goes.
+    var going = [];
+    if (pending) going.push(layers[front].firstElementChild);
+    if (cleanupTimer) going.push(layers[1 - front].firstElementChild);
+    for (var j = 0; j < going.length; j++) {
+      if (isMedia(going[j]) && going[j] !== defaultEl && elKey(going[j]) === key) return;
+    }
+    park(makeMedia(item.type, item.src, item.loop !== false, true));
+  }
+
+  // ---------- sound ----------
+  // Videos are created muted (so they can always preload and autoplay) and only the on-air
+  // video is given sound, when its item asks for it. The control page's Program monitor
+  // (a preview) stays silent so the operator doesn't hear it twice. The default loop is
+  // always silent.
+  function wantsSound(el, s) {
+    return !isPreview && el !== defaultEl && s.type === 'video' && !!s.audio;
+  }
+
+  // Sound fades with the picture, so a dissolve doesn't cut the audio dead.
+  function fadeVolume(v, to, ms) {
+    clearInterval(v.fadeTimer);
+    if (!ms) { v.volume = to; return; }
+    var from = v.volume, t0 = Date.now();
+    v.fadeTimer = setInterval(function () {
+      var k = Math.min(1, (Date.now() - t0) / ms);
+      v.volume = from + (to - from) * k;
+      if (k === 1) clearInterval(v.fadeTimer);
+    }, 30);
+  }
+
+  function setSound(v, on, ms) {
+    if (on === !v.muted) return;
+    if (on) { v.volume = ms ? 0 : 1; v.muted = false; fadeVolume(v, 1, ms); }
+    else { clearInterval(v.fadeTimer); v.muted = true; v.volume = 1; }
+  }
+
+  // The control page's Program monitor decodes video on top of OBS's own copy. Beyond what
+  // graphics cards decode in hardware (about 4096x2304 for H.264) that falls back to the CPU and
+  // stutters, so the monitor shows such videos as a still frame, and pauses any video it can't
+  // keep up with. data-still says why; the control page shows it. OBS itself always plays.
+  var MAX_PLAY_PIXELS = 4096 * 2304;
+  function tooBigToPlay(v) { return v.videoWidth * v.videoHeight > MAX_PLAY_PIXELS; }
+  function struggling(v) {
+    var q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null;
+    if (!q || v.paused || document.hidden) { v.lastQ = null; return false; }
+    var last = v.lastQ;
+    v.lastQ = { total: q.totalVideoFrames, dropped: q.droppedVideoFrames };
+    if (!last) return false;
+    var total = q.totalVideoFrames - last.total, dropped = q.droppedVideoFrames - last.dropped;
+    return total >= 20 && dropped / total > 0.25;
+  }
+  if (isPreview) setInterval(function () {
+    var v = frontVideo();
+    if (v && !v.dataset.still && struggling(v)) { v.dataset.still = 'slow'; v.pause(); }
+  }, 1000);
+
+  // ---------- switching ----------
+  // What the state actually puts on the wall.
+  function effective(s) {
+    if (s.type === 'default') {
+      if (s.default && s.default.src) return { kind: s.default.type || 'video', src: s.default.src, isDefault: true };
+      return { kind: 'blank' };
+    }
+    if (s.type === 'image' || s.type === 'video' || s.type === 'page') return { kind: s.type, src: s.src };
+    if (s.type === 'text') return { kind: 'text', text: s.text || '' };
+    if (s.type === 'black') return { kind: 'black' };
+    return { kind: 'blank' };
+  }
+
+  // A new take restarts media even for the same file; the default loop never restarts.
+  function keyOf(item, s) {
+    return [item.isDefault ? 'D' : 'X' + (s.takeId || 0), item.kind, item.src || '', item.text || ''].join('|');
+  }
+
+  function build(item) {
+    if (item.isDefault && defaultEl) { ensureSrc(defaultEl); return defaultEl; }
+    if (item.kind === 'image' || item.kind === 'video') {
+      var loop = item.isDefault ? true : current.loop !== false;
+      var el = unpark(item.kind + '|' + item.src);
+      if (el) {
+        ensureSrc(el);
+        if (el.tagName === 'VIDEO') el.loop = loop;
+        return el;
+      }
+      return makeMedia(item.kind, item.src, loop, false);
+    }
+    if (item.kind === 'page') {
+      var f = document.createElement('iframe');
+      f.setAttribute('allow', 'autoplay; fullscreen');
+      f.setAttribute('scrolling', 'no');
+      f.src = item.src;
+      return f;
+    }
+    if (item.kind === 'text') {
+      var d = document.createElement('div');
+      d.className = 'text';
+      d.textContent = item.text;
+      return d;
+    }
+    if (item.kind === 'black') {
+      var b = document.createElement('div');
+      b.className = 'black';
+      return b;
+    }
+    return null; // blank: the background colour shows through
+  }
+
+  // Calls cb as soon as el can show a picture, or after 3s regardless. For a video that means a
+  // decoded frame at its current position with no seek under way. Readiness is checked on
+  // every event that can bring it: a preloaded video that was rewound reports less while it
+  // seeks and never fires loadeddata again (that fires once per load), so waiting for
+  // loadeddata alone held every take of a cued video for the full 3s.
+  function whenReady(el, cb) {
+    if (!el) return cb();
+    var tag = el.tagName, done = false;
+    var names = tag === 'VIDEO' ? ['loadeddata', 'canplay', 'seeked', 'playing', 'error']
+      : tag === 'IMG' ? ['load', 'error'] : tag === 'IFRAME' ? ['load'] : [];
+    var t = setTimeout(fire, 3000);
+    function fire() {
+      if (done) return;
+      done = true;
+      clearTimeout(t);
+      names.forEach(function (n) { el.removeEventListener(n, check); });
+      cb();
+    }
+    function check(e) {
+      if (e && (e.type === 'error' || e.type === 'load')) return fire();
+      if (tag === 'VIDEO' ? el.readyState >= 2 && !el.seeking
+        : tag === 'IMG' ? el.complete && el.naturalWidth > 0
+        : tag !== 'IFRAME') fire();
+    }
+    names.forEach(function (n) { el.addEventListener(n, check); });
+    check();
+  }
+
+  // Takes everything out of a layer. Media is parked for reuse; the default loop just pauses.
+  function emptyLayer(layer) {
+    Array.prototype.slice.call(layer.childNodes).forEach(function (k) {
+      layer.removeChild(k);
+      if (k === defaultEl) k.pause();
+      else if (isMedia(k)) park(k);
+    });
+  }
+
+  function applyLook(s) {
+    document.documentElement.style.background = s.bg || '#000';
+    document.body.style.background = s.bg || '#000';
+    var media = document.querySelectorAll('.layer > img, .layer > video');
+    for (var i = 0; i < media.length; i++) media[i].style.objectFit = s.fit || 'cover';
+    if (defaultEl) defaultEl.style.objectFit = s.fit || 'cover';
+  }
+
+  function onEnded(ev) {
+    var el = ev.target;
+    if (!current || !el.parentNode || el.parentNode !== layers[front]) return;
+    if (current.type !== 'video' || current.loop !== false) return;
+    post('/api/ended', { takeId: current.takeId, changed: current.changed });
+    // Previews wait for the OBS display to end it; the server's answer moves them on.
+  }
+
+  // The element of the program item: still behind while its take waits for it.
+  function programEl() { return layers[pending ? 1 - front : front].firstElementChild; }
+
+  function render(s) {
+    if (VERSION.indexOf('__') !== 0 && s.displayVersion && s.displayVersion !== VERSION) {
+      location.reload();
+      return;
+    }
+    current = s;
+    preloadDefault(s.default);
+    applyLook(s);
+
+    var item = effective(s);
+    var key = keyOf(item, s);
+
+    if (key === shownKey) {
+      // Same thing already showing: just update the loop and sound flags, don't restart.
+      var v = programEl();
+      if (v && v.tagName === 'VIDEO' && !item.isDefault) {
+        v.loop = s.loop !== false;
+        if (!pending) setSound(v, wantsSound(v, s), 300);
+      }
+      preloadCued(s.preview);
+      return;
+    }
+
+    // Taken straight back before the last take reached the screen: what is on air stays on
+    // air, untouched, and the take still waiting is dropped.
+    var onAir = layers[front].firstElementChild;
+    if (pending && !item.isDefault && isMedia(onAir) && onAir !== defaultEl && elKey(onAir) === item.kind + '|' + item.src) {
+      token++;
+      pending = false;
+      shownKey = key;
+      emptyLayer(layers[1 - front]);
+      if (onAir.tagName === 'VIDEO') { onAir.loop = s.loop !== false; setSound(onAir, wantsSound(onAir, s), 0); }
+      preloadCued(s.preview);
+      return;
+    }
+
+    shownKey = key;
+    var my = ++token;
+    var ms = typeof s.transition === 'number' ? s.transition : 600;
+    pending = true;
+    // The back layer is emptied here, so the cleanup still due from the last dissolve isn't
+    // needed; left to run, it would empty the layer this take is about to use.
+    clearTimeout(cleanupTimer);
+    cleanupTimer = null;
+    var back = layers[1 - front];
+    emptyLayer(back);
+    var el = build(item);
+    if (el) {
+      if (el.tagName === 'IMG' || el.tagName === 'VIDEO') el.style.objectFit = s.fit || 'cover';
+      if (el.tagName === 'VIDEO' && el !== defaultEl) el.addEventListener('ended', onEnded);
+      back.appendChild(el);
+    }
+    // After build, which may have taken the parked element for this take.
+    preloadCued(s.preview);
+
+    whenReady(el, function () {
+      if (my !== token) return; // a newer change superseded this one
+      pending = false;
+      var old = layers[front];
+      if (el && el.tagName === 'VIDEO' && isPreview && tooBigToPlay(el)) {
+        el.dataset.still = 'size';
+      } else if (el && el.tagName === 'VIDEO') {
+        setSound(el, wantsSound(el, current), ms);
+        var p = el.play();
+        // A browser that blocks autoplay with sound still gets the picture.
+        if (p && p.catch) p.catch(function () {
+          if (el.muted) return;
+          setSound(el, false, 0);
+          el.play().catch(function () {});
+        });
+      }
+      var outgoing = old.querySelector('video');
+      if (outgoing && !outgoing.muted) fadeVolume(outgoing, 0, ms);
+      // Dissolve: the incoming layer fades in over the outgoing one, which stays fully
+      // visible underneath until the fade is done (no dip to black mid-transition).
+      back.style.transition = 'opacity ' + ms + 'ms ease';
+      old.style.transition = 'opacity 0s linear ' + ms + 'ms';
+      back.classList.add('front');
+      old.classList.remove('front');
+      front = 1 - front;
+      cleanupTimer = setTimeout(function () {
+        cleanupTimer = null;
+        if (old !== layers[front]) emptyLayer(old);
+        trimBlobs(false);
+      }, ms + 50);
+    });
+  }
+
+  function frontVideo() { return layers[front].querySelector('video'); }
+
+  // OBS display: report where the on-air video is.
+  if (!isPreview) setInterval(function () {
+    var v = frontVideo();
+    if (!v || v.paused || v.readyState < 2) return;
+    post('/api/position', { src: v.dataset.src || v.getAttribute('src'), t: v.currentTime, d: isFinite(v.duration) ? v.duration : undefined });
+  }, 1000);
+
+  // Preview: jump to the reported position when drifted noticeably.
+  function follow(p) {
+    if (typeof p.t !== 'number') return;
+    var v = frontVideo();
+    // A still isn't chased: every jump would make the browser decode the video again.
+    if (!v || v.dataset.still || (v.dataset.src || v.getAttribute('src')) !== p.src || v.readyState < 1) return;
+    var d = v.duration, target = p.t + 0.05; // allow for relay latency
+    var looping = v.loop && isFinite(d) && d > 0;
+    if (looping) target = target % d;
+    else if (isFinite(d)) target = Math.min(target, d);
+    var diff = Math.abs(v.currentTime - target);
+    if (looping) diff = Math.min(diff, d - diff); // 0.1s and 9.9s of a 10s loop are close
+    if (diff > 0.3) v.currentTime = target;
+  }
+
+  function connect() {
+    var es = new EventSource('/events?role=' + (isPreview ? 'preview' : 'display'));
+    es.onmessage = function (e) {
+      try { render(JSON.parse(e.data)); } catch (err) {}
+    };
+    es.addEventListener('media', function (e) {
+      var d = {};
+      try { d = JSON.parse(e.data) || {}; } catch (err) {}
+      if (d.removed) forgetMedia(d.removed);
+      else if (!d.added) forgetMedia();
+    });
+    if (isPreview) es.addEventListener('pos', function (e) {
+      try { follow(JSON.parse(e.data)); } catch (err) {}
+    });
+    // EventSource reconnects by itself after errors / server restarts.
+  }
+
+  connect();
+})();
+</script>
+</body>
+</html>

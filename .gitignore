@@ -1,0 +1,10 @@
+# Uploaded videos and images (large, and not code)
+media/
+
+# Live show data the server rewrites as it runs
+state.json
+asrun.csv
+rundowns.json
+
+node_modules/
+*.part
