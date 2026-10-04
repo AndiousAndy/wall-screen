@@ -48,6 +48,7 @@
   .tally.pgm { background: var(--pgm); color: #fff; }
   .muted { color: var(--muted); font-size: 13px; }
   .err { color: var(--danger); font-weight: 600; }
+  .settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px 10px; }
   .stats { font: 12px/1.6 ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; color: var(--text); background: var(--panel2); border-radius: 8px; padding: 6px 10px; }
   .stats .warn { color: var(--warn); }
   details { font-size: 13px; color: var(--muted); }
@@ -60,16 +61,52 @@
 <body>
 <div class="brand">WALL SCREEN · SHARE</div>
 <section>
-  <div class="row">
-    <label>Name on the control panel<input type="text" id="name" maxlength="60" placeholder="e.g. Andy's laptop"></label>
-    <label>Optimise for
+  <label>Name on the control panel<input type="text" id="name" maxlength="60" placeholder="e.g. Andy's laptop"></label>
+  <div class="settings">
+    <label>Output
+      <select id="fmt">
+        <option value="1080p30">1080p30</option>
+        <option value="1080p60">1080p60</option>
+        <option value="720p30">720p30</option>
+        <option value="720p60">720p60</option>
+      </select>
+    </label>
+    <label>Bitrate
+      <select id="rate">
+        <option value="auto">Auto</option>
+        <option value="4000">4 Mbps</option>
+        <option value="6000">6 Mbps</option>
+        <option value="8000">8 Mbps</option>
+        <option value="10000">10 Mbps</option>
+        <option value="15000">15 Mbps</option>
+        <option value="20000">20 Mbps</option>
+        <option value="30000">30 Mbps</option>
+      </select>
+    </label>
+    <label>Codec
+      <select id="codec">
+        <option value="auto">Auto</option>
+        <option value="H264">H.264</option>
+        <option value="VP9">VP9</option>
+        <option value="VP8">VP8</option>
+        <option value="AV1">AV1</option>
+      </select>
+    </label>
+    <label>Under load
+      <select id="degrade">
+        <option value="maintain-framerate-and-resolution">Hold resolution + fps</option>
+        <option value="maintain-resolution">Hold resolution</option>
+        <option value="maintain-framerate">Hold frame rate</option>
+      </select>
+    </label>
+    <label>Content
       <select id="hint">
-        <option value="detail">Detail (hold resolution)</option>
-        <option value="motion">Motion (hold frame rate)</option>
+        <option value="detail">Detail (text, UI)</option>
+        <option value="motion">Motion (video, games)</option>
       </select>
     </label>
   </div>
-  <div class="muted" id="hintInfo"></div>
+  <div class="muted" id="settingsInfo"></div>
   <label class="check"><input type="checkbox" id="withSound" checked> Share sound too (pick a tab, or the whole screen with "Share system audio" ticked; a window has no sound)</label>
   <div class="screen" id="screen"><video id="local" muted playsinline autoplay></video><div class="empty" id="empty">Not sharing</div></div>
   <div class="status">
@@ -86,8 +123,11 @@
   <details>
     <summary>Stream specs</summary>
     <dl class="specs">
-      <dt>Capture</dt><dd>Source resolution, capped at 1920×1080 (downscaled to fit, never upscaled). Up to 30 fps. Screen and window capture only produce a frame when the picture changes, so a still screen sends very few frames; tab capture runs at a steady rate.</dd>
-      <dt>To OBS</dt><dd>WebRTC, peer to peer (the server only sets the connection up). Codec <span id="specCodec">negotiated by the browsers</span>, up to 8 Mbps, 30 fps max. Bitrate adapts to the network and favours low latency (only a short jitter buffer on the receiving end), so a congested link shows as lower quality or dropped frames rather than growing delay.</dd>
+      <dt>Capture</dt><dd>The source, downscaled to fit the Output size (aspect ratio kept, never upscaled: a window smaller than 1280×720 is sent at its own size). Frame rate capped at the Output rate. Screen and window capture only produce a frame when the picture changes, so a still screen sends very few frames; tab capture runs at a steady rate.</dd>
+      <dt>To OBS</dt><dd>WebRTC, peer to peer (the server only sets the connection up). Codec <span id="specCodec">negotiated by the browsers</span>. The encoder starts at the Bitrate setting and won't go below half of it, so the picture is sharp from the first frame instead of ramping up over several seconds; the floor assumes a local network or a solid connection. Low latency: only a short jitter buffer on the receiving end.</dd>
+      <dt>Codec</dt><dd>Auto picks the first of H.264, VP9, AV1 that this computer can encode in hardware (GPU), else VP8 in software. Software encoding at 1080p60 needs a fast CPU. If OBS can't decode the chosen codec the connection falls back to the next one OBS supports. Codec, Bitrate and Output changes reconnect OBS (a brief glitch if on air).</dd>
+      <dt>Under load</dt><dd>What gives way when the encoder or network can't keep up. "Hold resolution + fps" (degradationPreference maintain-framerate-and-resolution) keeps the Output format fixed and lets quantisation rise instead, so the picture softens but never changes size or rate; frames are only dropped if the CPU can't encode them at all.</dd>
+      <dt>Content</dt><dd>The track's contentHint. "detail" tunes the encoder for screen content (sharp text, edges, flat colour); "motion" tunes it like a camera feed.</dd>
       <dt>Sound</dt><dd>Opus, 48 kHz stereo, up to 192 kbps, with echo cancellation, noise suppression and auto gain all off. Sent to the OBS display only.</dd>
       <dt>Monitors</dt><dd>The control panel's Preview and Program monitors get a separate encode: one third size, 15 fps max, 600 kbps max, no sound.</dd>
       <dt>Encoding load</dt><dd>This computer encodes one stream per viewer (OBS plus each open monitor), so a slow machine can drop frames. "Limited by: cpu" in the live stats means just that.</dd>
@@ -107,10 +147,18 @@
   var state = null;
   var pcs = {}; // viewer page id -> RTCPeerConnection
 
+  // ---------- video settings ----------
+  // Saved per computer. Content and Under load apply live; Output also re-captures at the new
+  // size; Output, Bitrate and Codec set up the OBS connections again.
+  var SETTINGS = ['fmt', 'rate', 'codec', 'degrade', 'hint'];
+  var FORMATS = { '1080p30': [1920, 1080, 30, 10000], '1080p60': [1920, 1080, 60, 16000], '720p30': [1280, 720, 30, 6000], '720p60': [1280, 720, 60, 9000] };
   try {
     $('name').value = localStorage.getItem('ws-share-name') || '';
-    $('hint').value = localStorage.getItem('ws-share-hint') || 'detail';
     $('withSound').checked = localStorage.getItem('ws-share-sound') !== '0';
+    SETTINGS.forEach(function (k) {
+      var v = localStorage.getItem('ws-share-' + k);
+      if (v && $(k).querySelector('option[value="' + v + '"]')) $(k).value = v;
+    });
   } catch (e) {}
   $('withSound').addEventListener('change', function () {
     try { localStorage.setItem('ws-share-sound', this.checked ? '1' : '0'); } catch (e) {}
@@ -119,41 +167,130 @@
     try { localStorage.setItem('ws-share-name', this.value); } catch (e) {}
     if (stream) register();
   });
-  $('hint').addEventListener('change', function () {
-    try { localStorage.setItem('ws-share-hint', this.value); } catch (e) {}
-    applyHint();
+  SETTINGS.forEach(function (k) {
+    $(k).addEventListener('change', function () {
+      try { localStorage.setItem('ws-share-' + k, this.value); } catch (e) {}
+      if (k === 'fmt') { detectCodec(); constrain(); }
+      if (k === 'hint' && stream) stream.getVideoTracks().forEach(function (t) { t.contentHint = $('hint').value; });
+      if (k === 'degrade' || k === 'hint') Object.keys(pcs).forEach(function (p) { setPreference(pcs[p]); });
+      if (k === 'fmt' || k === 'rate' || k === 'codec') reconnectDisplays();
+      describe();
+    });
   });
 
-  // What "Optimise for" sets: the track's content hint (how the encoder treats the picture) and
-  // each video sender's degradation preference (what gives way when bandwidth or CPU runs short).
-  var HINTS = {
-    detail: {
-      pref: 'maintain-resolution',
-      info: 'contentHint "detail", degradationPreference "maintain-resolution". The encoder is tuned for screen content: sharp text, edges and flat colour. When bandwidth or CPU runs short it keeps the full resolution and lowers the frame rate. Best for slides, documents, spreadsheets, dashboards, UI.'
-    },
-    motion: {
-      pref: 'maintain-framerate',
-      info: 'contentHint "motion", degradationPreference "maintain-framerate". The encoder treats it like a camera feed. When bandwidth or CPU runs short it keeps the frame rate and lowers the resolution, so movement stays smooth but fine text softens. Best for video playback, games, animation.'
-    }
-  };
-  function applyHint() {
-    var h = HINTS[$('hint').value] || HINTS.detail;
-    $('hintInfo').textContent = h.info;
-    if (!stream) return;
-    stream.getVideoTracks().forEach(function (t) { t.contentHint = $('hint').value; });
-    Object.keys(pcs).forEach(function (p) { setPreference(pcs[p]); });
+  function fmt() { return FORMATS[$('fmt').value] || FORMATS['1080p30']; }
+  function targetKbps() { return $('rate').value === 'auto' ? fmt()[3] : Number($('rate').value); }
+  function captureConstraints() {
+    var f = fmt();
+    return { width: { max: f[0] }, height: { max: f[1] }, frameRate: { ideal: f[2], max: f[2] } };
   }
+  function constrain() {
+    if (stream) stream.getVideoTracks().forEach(function (t) { t.applyConstraints(captureConstraints()).catch(function () {}); });
+  }
+
+  // Auto codec: the first one this computer encodes in hardware at the Output format.
+  var hwCodec = null; // { codec, hw }
+  function detectCodec() {
+    var f = fmt(), order = ['H264', 'VP9', 'AV1'];
+    if (!navigator.mediaCapabilities || !navigator.mediaCapabilities.encodingInfo) { hwCodec = { codec: 'VP8', hw: false }; return describe(); }
+    Promise.all(order.map(function (c) {
+      return navigator.mediaCapabilities.encodingInfo({ type: 'webrtc', video: { contentType: 'video/' + c, width: f[0], height: f[1], bitrate: targetKbps() * 1000, framerate: f[2] } })
+        .then(function (r) { return r.supported && r.powerEfficient; }, function () { return false; });
+    })).then(function (hw) {
+      var i = hw.indexOf(true);
+      hwCodec = i >= 0 ? { codec: order[i], hw: true } : { codec: 'VP8', hw: false };
+      describe();
+    });
+  }
+  function chosenCodec() { return $('codec').value === 'auto' ? (hwCodec ? hwCodec.codec : 'VP8') : $('codec').value; }
+
+  // The chosen codec first; the rest stay as fallbacks in case OBS can't decode it.
+  function preferCodec(tr) {
+    if (!tr.setCodecPreferences || !window.RTCRtpSender.getCapabilities) return;
+    var want = 'video/' + chosenCodec().toLowerCase();
+    var all = RTCRtpSender.getCapabilities('video').codecs;
+    var first = all.filter(function (c) { return c.mimeType.toLowerCase() === want; });
+    try { tr.setCodecPreferences(first.concat(all.filter(function (c) { return first.indexOf(c) < 0; }))); } catch (e) {}
+  }
+
+  // Chrome's sender reads its start, floor and ceiling bitrate from the codec parameters in the
+  // answer. Without them it starts at a few hundred kbps and takes seconds to ramp up.
+  function bitrateSdp(sdp, kbps) {
+    var x = 'x-google-start-bitrate=' + kbps + ';x-google-min-bitrate=' + Math.round(kbps / 2) + ';x-google-max-bitrate=' + Math.round(kbps * 1.2);
+    var lines = sdp.split('\r\n'), video = false, pts = {};
+    lines.forEach(function (l) {
+      if (l.indexOf('m=') === 0) video = l.indexOf('m=video') === 0;
+      var m = video && /^a=rtpmap:(\d+) (VP8|VP9|H264|AV1)\//i.exec(l);
+      if (m) pts[m[1]] = true;
+    });
+    var out = [];
+    lines.forEach(function (l) {
+      var f = /^a=fmtp:(\d+) /.exec(l);
+      if (f && pts[f[1]]) { out.push(l.replace(/;?x-google-[a-z-]+=\d+/g, '') + ';' + x); delete pts[f[1]]; return; }
+      out.push(l);
+    });
+    // Codecs with no parameters line (VP8) get one.
+    for (var i = out.length - 1; i >= 0; i--) {
+      var r = /^a=rtpmap:(\d+) /.exec(out[i]);
+      if (r && pts[r[1]]) { out.splice(i + 1, 0, 'a=fmtp:' + r[1] + ' ' + x); delete pts[r[1]]; }
+    }
+    return out.join('\r\n');
+  }
+
   function setPreference(pc) {
-    var h = HINTS[$('hint').value] || HINTS.detail;
     pc.getSenders().forEach(function (snd) {
       if (!snd.track || snd.track.kind !== 'video') return;
       var params = snd.getParameters();
       if (!params.encodings || !params.encodings.length) return; // not negotiated yet
-      params.degradationPreference = h.pref;
-      snd.setParameters(params).catch(function () {});
+      params.degradationPreference = pc.role === 'display' ? $('degrade').value : 'balanced';
+      // The encoder never sends more than the Output size, even if the capture comes in bigger.
+      if (pc.role === 'display') params.encodings[0].scaleResolutionDownBy = downscale(snd.track);
+      snd.setParameters(params).catch(function () {
+        // An older browser without the strict mode: hold the frame rate instead.
+        params.degradationPreference = 'maintain-framerate';
+        snd.setParameters(params).catch(function () {});
+      });
     });
   }
-  applyHint();
+
+  function downscale(track) {
+    var s = track.getSettings ? track.getSettings() : {}, f = fmt();
+    return s.width && s.height ? Math.max(1, s.width / f[0], s.height / f[1]) : 1;
+  }
+  // A shared window can be resized while live: keep the cap matching it.
+  setInterval(function () {
+    Object.keys(pcs).forEach(function (p) {
+      var pc = pcs[p];
+      if (pc.role !== 'display') return;
+      pc.getSenders().forEach(function (snd) {
+        if (!snd.track || snd.track.kind !== 'video') return;
+        var params = snd.getParameters();
+        if (!params.encodings || !params.encodings.length) return;
+        var want = downscale(snd.track);
+        if (Math.abs((params.encodings[0].scaleResolutionDownBy || 1) - want) > 0.01) { params.encodings[0].scaleResolutionDownBy = want; snd.setParameters(params).catch(function () {}); }
+      });
+    });
+  }, 2000);
+
+  // A new offer to a display replaces its connection (screen.js swaps to it), so the new
+  // codec and bitrate take effect.
+  function reconnectDisplays() {
+    Object.keys(pcs).forEach(function (p) { if (pcs[p].role === 'display') offer(p, 'display'); });
+  }
+
+  var DEGRADE_INFO = {
+    'maintain-framerate-and-resolution': 'resolution and frame rate fixed; under load the picture softens (higher quantisation) instead',
+    'maintain-resolution': 'resolution fixed; under load frames are dropped',
+    'maintain-framerate': 'frame rate fixed; under load resolution drops'
+  };
+  function describe() {
+    var f = fmt(), k = targetKbps(), c = chosenCodec();
+    var hw = $('codec').value === 'auto' ? (hwCodec ? (hwCodec.hw ? ' (hardware encode)' : ' (software: no hardware encoder found)') : ' (checking…)') : '';
+    $('settingsInfo').textContent = 'Up to ' + f[0] + '×' + f[1] + ' at ' + f[2] + ' fps · ' + c + hw + ' · '
+      + (k / 1000) + ' Mbps target, ' + (k / 2000) + ' Mbps floor · ' + DEGRADE_INFO[$('degrade').value] + ' · contentHint "' + $('hint').value + '".';
+  }
+  detectCodec();
+  describe();
 
   function showError(msg) { $('err').textContent = msg; $('err').hidden = !msg; }
 
@@ -194,7 +331,10 @@
     if (m.kind === 'hello') return offer(m.peer, m.role);
     var pc = pcs[m.peer];
     if (!pc) return;
-    if (m.kind === 'answer' && m.sdp) pc.setRemoteDescription(m.sdp).catch(function () { closePeer(m.peer); });
+    if (m.kind === 'answer' && m.sdp) {
+      var answer = pc.role === 'display' ? { type: 'answer', sdp: bitrateSdp(m.sdp.sdp, targetKbps()) } : m.sdp;
+      pc.setRemoteDescription(answer).then(function () { setPreference(pc); }, function () { closePeer(m.peer); });
+    }
     else if (m.kind === 'bye') closePeer(m.peer);
   }
 
@@ -213,11 +353,14 @@
     var full = role === 'display';
     pc.role = role;
     stream.getVideoTracks().forEach(function (t) {
-      pc.addTransceiver(t, {
+      var tr = pc.addTransceiver(t, {
         direction: 'sendonly',
         streams: [stream],
-        sendEncodings: [full ? { maxBitrate: 8000000, maxFramerate: 30 } : { maxBitrate: 600000, maxFramerate: 15, scaleResolutionDownBy: 3 }]
+        sendEncodings: [full
+          ? { maxBitrate: targetKbps() * 1200, maxFramerate: fmt()[2], priority: 'high', networkPriority: 'high' }
+          : { maxBitrate: 600000, maxFramerate: 15, scaleResolutionDownBy: 3 }]
       });
+      if (full) preferCodec(tr);
     });
     // The display always gets a sound channel, empty when nothing is shared with sound, so
     // "Share something else" can add or drop sound without setting the connection up again.
@@ -245,7 +388,7 @@
   $('btnStart').onclick = function () {
     showError('');
     navigator.mediaDevices.getDisplayMedia({
-      video: { width: { max: 1920 }, height: { max: 1080 }, frameRate: { ideal: 30, max: 30 } },
+      video: captureConstraints(),
       // Untouched, as for music: no voice-call echo cancelling or levelling.
       audio: $('withSound').checked ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false,
       systemAudio: 'include',
@@ -315,22 +458,26 @@
     Promise.all(displays.map(function (p) { return pcs[p].getStats(); })).then(function (all) {
       $('stats').innerHTML = '';
       all.forEach(function (report, i) {
-        var v = null, a = null, codecs = {}, pair = null;
+        var v = null, a = null, src = null, codecs = {}, pair = null;
         report.forEach(function (s) {
           if (s.type === 'outbound-rtp' && s.kind === 'video') v = s;
           if (s.type === 'outbound-rtp' && s.kind === 'audio') a = s;
+          if (s.type === 'media-source' && s.kind === 'video') src = s;
           if (s.type === 'codec') codecs[s.id] = s;
           if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s;
         });
         var line = document.createElement('div');
         var parts = [];
+        // Capture fps vs sent fps tells where frames are lost: a low capture rate is the source
+        // (a still screen, or a slow capture), a lower sent rate is the encoder.
+        if (src && src.framesPerSecond !== undefined) parts.push('capture ' + Math.round(src.framesPerSecond) + ' fps');
         if (v) {
           var codec = codecs[v.codecId] ? codecs[v.codecId].mimeType.split('/')[1] : '?';
           if (codecs[v.codecId]) $('specCodec').textContent = codec + ' (as negotiated now)';
-          parts.push((v.frameWidth || 0) + '×' + (v.frameHeight || 0));
+          parts.push('sent ' + (v.frameWidth || 0) + '×' + (v.frameHeight || 0));
           parts.push((v.framesPerSecond ? Math.round(v.framesPerSecond) : 0) + ' fps');
-          parts.push(codec);
-          parts.push(fmtRate(kbps(v.id + displays[i], v.bytesSent, v.timestamp)));
+          parts.push(codec + (v.powerEfficientEncoder === true ? ' (hw)' : v.powerEfficientEncoder === false ? ' (sw)' : ''));
+          parts.push(fmtRate(kbps(v.id + displays[i], v.bytesSent, v.timestamp)) + (v.targetBitrate ? ' of ' + fmtRate(v.targetBitrate / 1000) : ''));
           if (v.encoderImplementation) parts.push(v.encoderImplementation);
         }
         if (a) parts.push('Opus ' + fmtRate(kbps(a.id + displays[i], a.bytesSent, a.timestamp)));

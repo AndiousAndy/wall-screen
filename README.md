@@ -90,7 +90,13 @@ Any computer with Chrome or Edge can put its screen on the wall through the same
 - **+ Screen share** under the rundown adds a row that shows whichever share started last, so a rundown can hold a "screen" slot before anyone is sharing. **+ Rundown** on a share adds a row for that share.
 - Keep the share tab open. Stopping (the page's button, Chrome's own "Stop sharing" bar, or closing the tab) takes the wall back to the default loop.
 - **Share something else** switches what's shared without dropping off the wall.
-- **Optimise for** picks sharp text (slides, documents) or smooth motion (video, games).
+- Video settings on the share page (saved per computer):
+  - **Output** 1080p30 / 1080p60 / 720p30 / 720p60: the size and frame rate sent to OBS (larger sources are downscaled; nothing is upscaled).
+  - **Bitrate**: Auto is 10 / 16 / 6 / 9 Mbps for those formats. The stream starts at this rate and won't drop below half of it, so it's sharp straight away; the floor assumes a local network or a solid connection.
+  - **Codec**: Auto uses the first of H.264, VP9, AV1 the sharing computer can encode in hardware, else VP8 in software.
+  - **Under load**: what gives way if the encoder or network can't keep up. The default holds resolution and frame rate and lets the picture soften instead.
+  - **Content**: the encoder hint, Detail (text, UI) or Motion (video, games).
+  - The live stats line shows capture fps against sent fps, resolution, codec, bitrate against target, and "limited by: cpu/bandwidth" when the encoder is held back.
 - Share a single window or tab, not the whole screen, on the streaming PC, or the wall ends up showing OBS inside itself.
 
 **Sound.** With **Share sound too** ticked, Chrome's picker offers the sound as well: a **tab** always can, the **whole screen** can on Windows (tick "Share system audio"), a **window** can't. The share page says "With sound" or "No sound". A share goes on the wall muted, like a video: turn it on with the **Muted / Sound** switch under Preview or Program, or the Sound button on its rundown row. It reaches OBS the same way as video sound (see Audio above), in stereo, and only the OBS display gets it; the control panel's monitors stay silent.
