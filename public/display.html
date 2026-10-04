@@ -29,6 +29,7 @@
 <body>
 <div class="layer front" id="layerA"></div>
 <div class="layer" id="layerB"></div>
+<script src="/screen.js"></script>
 <script>
 (function () {
   // Replaced by the server with a hash of this file. When the server reports a different
@@ -55,6 +56,43 @@
   // control page's Program monitor) don't preload, but do keep what went off air.
   var parked = []; // { key, el }, oldest first
   var MAX_PARKED = isPreview ? 2 : 3;
+
+  // ---------- screen shares ----------
+  // Live from a /share page (see screen.js). A screen element is a <video> showing the share's
+  // stream; it carries data-share, not data-src, so none of the file handling below applies.
+  var PEER = window.screenShareId ? window.screenShareId() : '';
+  var screens = window.ScreenViewer ? window.ScreenViewer({
+    peer: PEER,
+    role: isPreview ? 'preview' : 'display',
+    onStream: function (id, stream) {
+      var els = document.querySelectorAll('video[data-share]');
+      for (var i = 0; i < els.length; i++) if (els[i].dataset.share === id) showStream(els[i], stream);
+    }
+  }) : null;
+
+  function showStream(v, stream) {
+    if (!stream || v.srcObject === stream) return;
+    v.srcObject = stream;
+    v.play().catch(function () {});
+  }
+
+  function makeScreen(id) {
+    var v = document.createElement('video');
+    v.dataset.share = id || '';
+    v.muted = true; v.setAttribute('muted', ''); v.setAttribute('playsinline', '');
+    v.autoplay = true;
+    showStream(v, screens && screens.stream(id));
+    return v;
+  }
+
+  // Connected to the share on air, and (on the OBS display) the one cued, so TAKE is instant.
+  function wantScreens(s) {
+    if (!screens) return;
+    var ids = [];
+    if (s.type === 'screen') ids.push(s.src);
+    if (!isPreview && s.preview && s.preview.type === 'screen') ids.push(s.preview.src);
+    screens.want(ids);
+  }
 
   function post(path, body) {
     if (isPreview) return;
@@ -305,7 +343,7 @@
   }
   if (isPreview) setInterval(function () {
     var v = frontVideo();
-    if (v && !v.dataset.still && struggling(v)) { v.dataset.still = 'slow'; v.pause(); }
+    if (v && v.dataset.src && !v.dataset.still && struggling(v)) { v.dataset.still = 'slow'; v.pause(); }
   }, 1000);
 
   // ---------- switching ----------
@@ -316,6 +354,7 @@
       return { kind: 'blank' };
     }
     if (s.type === 'image' || s.type === 'video' || s.type === 'page') return { kind: s.type, src: s.src };
+    if (s.type === 'screen') return { kind: 'screen', src: s.src };
     if (s.type === 'text') return { kind: 'text', text: s.text || '' };
     if (s.type === 'black') return { kind: 'black' };
     return { kind: 'blank' };
@@ -338,6 +377,7 @@
       }
       return makeMedia(item.kind, item.src, loop, false);
     }
+    if (item.kind === 'screen') return makeScreen(item.src);
     if (item.kind === 'page') {
       var f = document.createElement('iframe');
       f.setAttribute('allow', 'autoplay; fullscreen');
@@ -393,6 +433,7 @@
       layer.removeChild(k);
       if (k === defaultEl) k.pause();
       else if (isMedia(k)) park(k);
+      else if (k.dataset && k.dataset.share !== undefined) k.srcObject = null;
     });
   }
 
@@ -421,6 +462,7 @@
       return;
     }
     current = s;
+    wantScreens(s);
     preloadDefault(s.default);
     applyLook(s);
 
@@ -474,7 +516,7 @@
       if (my !== token) return; // a newer change superseded this one
       pending = false;
       var old = layers[front];
-      if (el && el.tagName === 'VIDEO' && isPreview && tooBigToPlay(el)) {
+      if (el && isMedia(el) && el.tagName === 'VIDEO' && isPreview && tooBigToPlay(el)) {
         el.dataset.still = 'size';
       } else if (el && el.tagName === 'VIDEO') {
         setSound(el, wantsSound(el, current), ms);
@@ -508,7 +550,7 @@
   // OBS display: report where the on-air video is.
   if (!isPreview) setInterval(function () {
     var v = frontVideo();
-    if (!v || v.paused || v.readyState < 2) return;
+    if (!v || !v.dataset.src || v.paused || v.readyState < 2) return;
     post('/api/position', { src: v.dataset.src || v.getAttribute('src'), t: v.currentTime, d: isFinite(v.duration) ? v.duration : undefined });
   }, 1000);
 
@@ -528,10 +570,13 @@
   }
 
   function connect() {
-    var es = new EventSource('/events?role=' + (isPreview ? 'preview' : 'display'));
+    var es = new EventSource('/events?role=' + (isPreview ? 'preview' : 'display') + (PEER ? '&peer=' + PEER : ''));
     es.onmessage = function (e) {
       try { render(JSON.parse(e.data)); } catch (err) {}
     };
+    es.addEventListener('rtc', function (e) {
+      try { if (screens) screens.signal(JSON.parse(e.data)); } catch (err) {}
+    });
     es.addEventListener('media', function (e) {
       var d = {};
       try { d = JSON.parse(e.data) || {}; } catch (err) {}

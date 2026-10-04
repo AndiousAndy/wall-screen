@@ -79,6 +79,31 @@ Web pages aren't muted by the wall, so a page or embed that plays sound will be 
 
 Stream Deck: add `&audio=1` to a `/api/show` URL to take a video with sound, or call `/api/show?audio=0` / `?audio=1` to switch the on-air video's sound.
 
+## Screen sharing
+
+Any computer with Chrome or Edge can put its screen on the wall through the same OBS browser source.
+
+1. Open `/share` on the computer to share from (add `?key=…` if you set a key). On the streaming PC, **Share this computer** in the control panel's **Screen shares** panel opens it in a new window.
+2. Give it a name, click **Share screen** and pick a tab, window or whole screen in Chrome's picker.
+3. It appears under **Screen shares** in the control panel. **Cue** puts it in Preview; then TAKE or AUTO as usual. FTB, SAFE, dissolves, Fit/Fill and the as-run log all work with it.
+
+- **+ Screen share** under the rundown adds a row that shows whichever share started last, so a rundown can hold a "screen" slot before anyone is sharing. **+ Rundown** on a share adds a row for that share.
+- Keep the share tab open. Stopping (the page's button, Chrome's own "Stop sharing" bar, or closing the tab) takes the wall back to the default loop.
+- **Share something else** switches what's shared without dropping off the wall.
+- Picture only, no sound. **Optimise for** picks sharp text (slides, documents) or smooth motion (video, games).
+- Share a single window or tab, not the whole screen, on the streaming PC, or the wall ends up showing OBS inside itself.
+
+The video goes straight from the sharing browser to OBS (WebRTC); the server only passes on the few messages that set up the connection, so a share keeps playing even through a server restart. The OBS display gets full quality; the control panel's monitors get a small copy.
+
+### Sharing from another computer
+
+Chrome only allows screen sharing on `https://` pages or on `localhost`, so a laptop opening `http://192.168.x.x:3000/share` gets an error. Either:
+
+- Open it through an https link, e.g. the Cloudflare quick tunnel below: `https://<random>.trycloudflare.com/share?key=…`. The video itself still goes directly over your network.
+- Or, on that laptop only, open `chrome://flags/#unsafely-treat-insecure-origin-as-secure`, add `http://<server-ip>:3000`, enable it and relaunch Chrome.
+
+Both computers need to reach each other directly (same network, or ordinary home/office internet). Very locked-down networks that block WebRTC won't connect.
+
 ## Video format tips
 
 - **H.264 MP4** or **VP9 WebM**, 1080p. Avoid HEVC/H.265 and ProRes `.mov` files, which OBS's browser can't decode.
@@ -153,6 +178,7 @@ Straight to air (skips Preview):
 | Image from URL | `http://localhost:3000/api/show?url=https://example.com/a.png&type=image` |
 | Web page | `http://localhost:3000/api/show?page=https://example.com` |
 | Text | `http://localhost:3000/api/show?text=Welcome%20in!` |
+| Latest screen share | `http://localhost:3000/api/show?type=screen` |
 | Fit change only | `http://localhost:3000/api/show?fit=contain` |
 | Change default | `http://localhost:3000/api/default?file=betbolt-loop.mp4` |
 
@@ -183,4 +209,7 @@ Straight to air (skips Preview):
 | POST | `/api/ended` | no | Called by the display when a play-once video ends |
 | POST | `/api/position` | no | The display reports video position each second; the control-page preview (`/display?preview=1`) follows it |
 | POST | `/api/upload` | yes | Raw body, `X-Filename` header (URI-encoded) |
+| GET | `/share` | yes | Screen share page |
+| GET | `/screen.js` | no | Screen share script used by the pages |
+| POST | `/api/rtc` | no* | Screen share connection setup from a viewer page (*watching a share that isn't on air or cued needs the key) |
 | DELETE | `/api/media?name=` | yes | Delete a file |

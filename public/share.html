@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0f1115">
+<title>Share screen · Wall Screen</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1f232c; --line: #2a2f3a;
+    --text: #e8eaef; --muted: #8a92a3; --accent: #4f8cff; --live: #22c55e;
+    --danger: #ef4444; --warn: #f59e0b; --pvw: #22c55e; --pgm: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { color-scheme: dark; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 16px; max-width: 640px; margin-inline: auto;
+  }
+  .brand { font-weight: 800; letter-spacing: .14em; font-size: 14px; margin-bottom: 12px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 12px; }
+  label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+  input, select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 9px; padding: 7px 10px; font: inherit; min-height: 38px; min-width: 0;
+  }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 160px; }
+  button {
+    appearance: none; border: 1px solid var(--line); background: var(--panel2); color: var(--text);
+    padding: 8px 12px; border-radius: 9px; font: inherit; font-weight: 600; cursor: pointer; min-height: 42px;
+  }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.stop { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .screen { position: relative; aspect-ratio: 16 / 9; background: #000; border-radius: 6px; overflow: hidden; border: 3px solid var(--line); }
+  .screen.pvw { border-color: var(--pvw); }
+  .screen.pgm { border-color: var(--pgm); }
+  .screen video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .screen .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 16px; }
+  .status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .tally { font-size: 12px; font-weight: 800; letter-spacing: .12em; padding: 3px 8px; border-radius: 4px; background: var(--panel2); color: var(--muted); }
+  .tally.pvw { background: var(--pvw); color: #04140a; }
+  .tally.pgm { background: var(--pgm); color: #fff; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .err { color: var(--danger); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="brand">WALL SCREEN · SHARE</div>
+<section>
+  <div class="row">
+    <label>Name on the control panel<input type="text" id="name" maxlength="60" placeholder="e.g. Andy's laptop"></label>
+    <label>Optimise for
+      <select id="hint">
+        <option value="detail">Text and slides (sharp)</option>
+        <option value="motion">Video and games (smooth)</option>
+      </select>
+    </label>
+  </div>
+  <div class="screen" id="screen"><video id="local" muted playsinline autoplay></video><div class="empty" id="empty">Not sharing</div></div>
+  <div class="status">
+    <span class="tally" id="tally">OFF</span>
+    <span id="statusText" class="muted">Pick a tab, window or screen to share.</span>
+  </div>
+  <div class="row">
+    <button class="primary" id="btnStart">Share screen</button>
+    <button id="btnCue" hidden>Cue in Preview</button>
+    <button class="stop" id="btnStop" hidden>Stop sharing</button>
+  </div>
+  <div class="err" id="err" hidden></div>
+  <div class="muted">Keep this tab open while sharing. Sharing a single window or tab avoids putting this page (or OBS) inside its own picture.</div>
+</section>
+<script src="/screen.js"></script>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var KEY = params.get('key') || '';
+  var $ = function (id) { return document.getElementById(id); };
+  var stream = null;
+  var shareId = '';
+  var sock = null, registered = false;
+  var state = null;
+  var pcs = {}; // viewer page id -> RTCPeerConnection
+
+  try { $('name').value = localStorage.getItem('ws-share-name') || ''; $('hint').value = localStorage.getItem('ws-share-hint') || 'detail'; } catch (e) {}
+  $('name').addEventListener('change', function () {
+    try { localStorage.setItem('ws-share-name', this.value); } catch (e) {}
+    if (stream) register();
+  });
+  $('hint').addEventListener('change', function () {
+    try { localStorage.setItem('ws-share-hint', this.value); } catch (e) {}
+    if (stream) stream.getVideoTracks().forEach(function (t) { t.contentHint = $('hint').value; });
+  });
+
+  function showError(msg) { $('err').textContent = msg; $('err').hidden = !msg; }
+
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    $('btnStart').disabled = true;
+    showError(window.isSecureContext
+      ? 'This browser can\'t share its screen. Use Chrome or Edge on a computer.'
+      : 'Chrome only allows screen sharing on https:// pages or on the computer running the server (localhost). Open this page through an https:// link (see README: "Sharing from another computer").');
+  }
+
+  // ---------- command socket ----------
+  function openSock() {
+    var s = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws' + (KEY ? '?key=' + encodeURIComponent(KEY) : ''));
+    s.onopen = function () { sock = s; if (stream) register(); render(); };
+    s.onmessage = function (e) {
+      var m;
+      try { m = JSON.parse(e.data); } catch (err) { return; }
+      if (m.type === 'share-ok') { registered = true; render(); }
+      else if (m.type === 'rtc') onSignal(m);
+    };
+    s.onclose = function () {
+      if (sock === s) sock = null;
+      registered = false;
+      render();
+      setTimeout(openSock, 1000);
+    };
+  }
+  function sendSock(obj) { if (sock && sock.readyState === 1) sock.send(JSON.stringify(obj)); }
+  function register() { sendSock({ type: 'share', id: shareId, name: shareName() }); }
+  function shareName() { return $('name').value.trim() || 'Screen'; }
+  openSock();
+  setInterval(function () { sendSock({ type: 'ping', id: 'k' }); }, 15000); // keeps proxies from closing it
+
+  // ---------- streaming to viewers ----------
+  // One connection per viewer page. The OBS display gets full quality; the control page's
+  // monitors get a small, cheap copy.
+  function onSignal(m) {
+    if (m.kind === 'hello') return offer(m.peer, m.role);
+    var pc = pcs[m.peer];
+    if (!pc) return;
+    if (m.kind === 'answer' && m.sdp) pc.setRemoteDescription(m.sdp).catch(function () { closePeer(m.peer); });
+    else if (m.kind === 'bye') closePeer(m.peer);
+  }
+
+  function closePeer(peer) {
+    var pc = pcs[peer];
+    if (!pc) return;
+    delete pcs[peer];
+    pc.close();
+    render();
+  }
+
+  function offer(peer, role) {
+    if (!stream) return;
+    closePeer(peer);
+    var pc = pcs[peer] = new RTCPeerConnection({ iceServers: window.SCREEN_ICE });
+    var full = role === 'display';
+    stream.getVideoTracks().forEach(function (t) {
+      pc.addTransceiver(t, {
+        direction: 'sendonly',
+        streams: [stream],
+        sendEncodings: [full ? { maxBitrate: 8000000, maxFramerate: 30 } : { maxBitrate: 600000, maxFramerate: 15, scaleResolutionDownBy: 3 }]
+      });
+    });
+    var lost = null;
+    pc.onconnectionstatechange = function () {
+      clearTimeout(lost);
+      var st = pc.connectionState;
+      // A viewer that has gone (page closed or reloaded) is dropped; one that comes back says hello again.
+      if (st === 'failed') closePeer(peer);
+      else if (st === 'disconnected') lost = setTimeout(function () { if (pcs[peer] === pc) closePeer(peer); }, 15000);
+      render();
+    };
+    pc.createOffer()
+      .then(function (o) { return pc.setLocalDescription(o); })
+      .then(function () { return window.screenGathered(pc); })
+      .then(function () {
+        if (pcs[peer] === pc) sendSock({ type: 'rtc', kind: 'offer', peer: peer, sdp: pc.localDescription });
+      })
+      .catch(function () { closePeer(peer); });
+    render();
+  }
+
+  // ---------- capture ----------
+  $('btnStart').onclick = function () {
+    showError('');
+    navigator.mediaDevices.getDisplayMedia({
+      video: { width: { max: 1920 }, height: { max: 1080 }, frameRate: { ideal: 30, max: 30 } },
+      audio: false,
+      selfBrowserSurface: 'exclude',
+      surfaceSwitching: 'include'
+    }).then(start, function (e) {
+      if (e && e.name !== 'NotAllowedError') showError('Could not share: ' + (e.message || e.name));
+    });
+  };
+
+  function start(s) {
+    var old = stream;
+    stream = s;
+    var track = s.getVideoTracks()[0];
+    if (track) {
+      track.contentHint = $('hint').value;
+      track.addEventListener('ended', function () { if (stream === s) stop(); }); // Chrome's own "Stop sharing"
+    }
+    // Sharing something else swaps the picture on the connections already up, so the wall
+    // cuts straight to it.
+    Object.keys(pcs).forEach(function (p) {
+      pcs[p].getSenders().forEach(function (snd) { if (track) snd.replaceTrack(track).catch(function () {}); });
+    });
+    if (old) old.getTracks().forEach(function (t) { t.stop(); });
+    $('local').srcObject = s;
+    // Keeps the same id across reloads of the server, and across a stop and share again in
+    // this tab, so the wall picks it back up.
+    if (!shareId) shareId = window.screenShareId();
+    register();
+    render();
+  }
+
+  function stop(quiet) {
+    Object.keys(pcs).forEach(closePeer);
+    if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+    stream = null;
+    $('local').srcObject = null;
+    if (!quiet) { sendSock({ type: 'share-stop' }); registered = false; }
+    render();
+  }
+  $('btnStop').onclick = function () { stop(); };
+  window.addEventListener('pagehide', function () { if (stream) sendSock({ type: 'share-stop' }); });
+
+  $('btnCue').onclick = function () {
+    sendSock({ id: 'cue', path: '/api/preview', body: { item: { type: 'screen', src: shareId } } });
+  };
+
+  // ---------- status ----------
+  function render() {
+    var sharing = !!stream;
+    $('btnStart').textContent = sharing ? 'Share something else' : 'Share screen';
+    $('btnStop').hidden = !sharing;
+    $('btnCue').hidden = !sharing || !registered;
+    $('empty').hidden = sharing;
+    var onAir = sharing && state && state.type === 'screen' && state.src === shareId;
+    var cued = sharing && state && state.preview && state.preview.type === 'screen' && state.preview.src === shareId;
+    $('screen').className = 'screen' + (onAir ? ' pgm' : cued ? ' pvw' : '');
+    var tally = $('tally');
+    tally.className = 'tally' + (onAir ? ' pgm' : cued ? ' pvw' : '');
+    tally.textContent = onAir ? 'ON AIR' : cued ? 'PREVIEW' : sharing ? 'READY' : 'OFF';
+    var viewers = Object.keys(pcs).filter(function (p) { return pcs[p].connectionState === 'connected'; }).length;
+    $('statusText').textContent = !sharing ? 'Pick a tab, window or screen to share.'
+      : !sock ? 'Reconnecting to the server…'
+      : !registered ? 'Connecting…'
+      : (onAir ? 'On the wall.' : cued ? 'Cued in Preview, ready to take.' : 'Shared. The control panel can now cue it.')
+        + ' ' + viewers + (viewers === 1 ? ' viewer.' : ' viewers.');
+  }
+
+  function connect() {
+    var es = new EventSource('/events?role=other');
+    es.onmessage = function (e) {
+      try { state = JSON.parse(e.data); } catch (err) { return; }
+      render();
+    };
+  }
+  connect();
+  render();
+})();
+</script>
+</body>
+</html>

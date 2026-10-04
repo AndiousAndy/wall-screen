@@ -218,6 +218,13 @@
   .card .actions { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 4px; padding: 8px; }
   .card .actions button { min-height: 30px; padding: 2px 4px; font-size: 12px; white-space: nowrap; }
 
+  .shares { display: grid; gap: 6px; }
+  .share { display: flex; align-items: center; gap: 8px; background: var(--panel2); border: 2px solid transparent; border-radius: 9px; padding: 6px 8px; }
+  .share.pvw { border-color: var(--pvw); }
+  .share.pgm { border-color: var(--pgm); }
+  .share .name { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .share .name small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
+
   .default-box { display: flex; gap: 12px; align-items: center; }
   .default-thumb { width: 140px; flex: none; aspect-ratio: 16/9; background: #000; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
   .default-thumb img, .default-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -351,6 +358,7 @@
         <input type="text" id="addValue" placeholder="https://… or example.com" autocomplete="off">
         <button id="addBtn">Add</button>
         <button id="addBlack">+ Black</button>
+        <button id="addScreen" title="A row that shows whichever screen share started last">+ Screen share</button>
         <button id="addDefault">+ Default loop</button>
       </div>
       <div class="muted hint">Click a row to cue it in Preview, then TAKE or AUTO. Drag rows by ⋮⋮ to reorder, or drag library items in. Double-click a name to rename it. ↑ / ↓ cue the previous / next row.</div>
@@ -363,6 +371,12 @@
   </div>
 
   <div class="col">
+    <section>
+      <div class="sechead lockable"><h2>Screen shares</h2><button class="sm" id="btnShare" title="Open the share page in a new window to share a screen from this computer">Share this computer</button></div>
+      <div class="shares lockable" id="shares"></div>
+      <div class="muted hint">To share from another computer, open <a id="shareLink" href="/share" target="_blank" rel="noopener">/share</a> there (it needs an https:// link, see the README). Shares appear here; click one to cue it.</div>
+    </section>
+
     <section id="libraryPanel">
       <div class="sechead"><h2>Library</h2></div>
       <div class="row">
@@ -396,6 +410,7 @@
   </div>
 </div>
 
+<script src="/screen.js"></script>
 <script>
 (function () {
   var params = new URLSearchParams(location.search);
@@ -594,12 +609,18 @@
     if (b > 1048576) return (b / 1048576).toFixed(1) + ' MB';
     return Math.max(1, Math.round(b / 1024)) + ' KB';
   }
-  var TYPE_NAMES = { video: 'Video', image: 'Image', page: 'Web page', text: 'Text', blank: 'Blank', black: 'Black', 'default': 'Default loop' };
-  var TYPE_BADGE = { page: 'WEB', text: 'TEXT', blank: 'BLANK', black: 'BLACK', 'default': 'DEF' };
+  var TYPE_NAMES = { video: 'Video', image: 'Image', page: 'Web page', text: 'Text', blank: 'Blank', black: 'Black', 'default': 'Default loop', screen: 'Screen share' };
+  var TYPE_BADGE = { page: 'WEB', text: 'TEXT', blank: 'BLANK', black: 'BLACK', 'default': 'DEF', screen: 'SCREEN' };
+  function findShare(id) {
+    var list = (state && state.shares) || [];
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
   function itemLabel(it) {
     if (!it) return '';
     if (it.label) return it.label;
     if (it.type === 'text') return (it.text || '').replace(/\s+/g, ' ').slice(0, 60) || 'Text';
+    if (it.type === 'screen') { var sh = findShare(it.src); return 'Screen: ' + (sh ? sh.name : it.src ? 'ended' : 'any share'); }
     if (it.type === 'default') return 'Default loop' + (state && state.default && state.default.src ? ' (' + nameFromSrc(state.default.src) + ')' : '');
     if (it.src) return nameFromSrc(it.src);
     return TYPE_NAMES[it.type] || it.type;
@@ -717,6 +738,16 @@
       : "this browser can't keep up with this video.") + ' The wall plays it normally.';
   }
 
+  // A screen share cued in Preview streams to this page too (a small copy; see screen.js).
+  var PEER = window.screenShareId ? window.screenShareId() : '';
+  var screens = window.ScreenViewer ? window.ScreenViewer({
+    peer: PEER, role: 'preview', key: KEY,
+    onStream: function (id, stream) {
+      var v = $('pvwStage').querySelector('video[data-share]');
+      if (v && v.dataset.share === id && v.srcObject !== stream) { v.srcObject = stream; v.play().catch(function () {}); }
+    }
+  }) : null;
+
   // Preview plays locally in this page; nothing here touches the wall until TAKE.
   var pvwKey = null, pvwVideo = null, scrubbing = false;
   var pvwForced = false; // Play was pressed on a still, so leave it playing
@@ -738,9 +769,11 @@
     var fit = (it && it.fit) || state.fit || 'cover';
     var bg = (it && it.bg) || state.bg || '#000';
     var src = resolvedSrc(it);
+    if (screens) screens.want(it && it.type === 'screen' ? [it.src] : []);
     var key = it ? [it.type, src, it.text || '', fit, bg, it.src || ''].join('|') : '';
     if (key === pvwKey) {
       if (pvwVideo && isVid) pvwVideo.loop = it.loop !== false;
+      paintScreenNote(it);
       return;
     }
     pvwKey = key;
@@ -770,6 +803,12 @@
       node = el('img'); node.src = src; node.style.objectFit = fit;
     } else if (kind === 'page') {
       node = el('iframe'); node.src = it.src;
+    } else if (kind === 'screen') {
+      node = el('video');
+      node.muted = true; node.setAttribute('playsinline', ''); node.autoplay = true;
+      node.dataset.share = it.src || ''; node.style.objectFit = fit;
+      var live = screens && screens.stream(it.src);
+      if (live) node.srcObject = live;
     } else if (kind === 'text') {
       node = el('div', 'text', it.text || '');
     } else if (kind === 'black') {
@@ -777,6 +816,13 @@
     }
     if (node) stage.appendChild(node);
     if (kind === 'page') $('pvwTime').textContent = 'Web page (sites that block embedding show blank)';
+    paintScreenNote(it);
+  }
+  function paintScreenNote(it) {
+    if (!it || it.type !== 'screen') return;
+    var sh = findShare(it.src);
+    $('pvwTime').textContent = !it.src ? 'No screen is being shared yet'
+      : !sh ? 'This share has ended' : sh.live ? 'Live screen share' : 'Share reconnecting…';
   }
 
   $('pvwPlay').onclick = function () {
@@ -991,8 +1037,40 @@
     }
     if (alertSrc && alertSrc !== programSrc() && alertSrc !== previewSrc()) hideAlert();
     renderTags();
+    renderShares();
     paintRundown();
   }
+
+  // ---------- screen shares ----------
+  var sharesSig = '';
+  function renderShares() {
+    var list = state.shares || [];
+    var pgm = state.type === 'screen' ? state.src : '';
+    var pvw = state.preview && state.preview.type === 'screen' ? state.preview.src : '';
+    var sig = JSON.stringify([list, pgm, pvw]);
+    if (sig === sharesSig) return;
+    sharesSig = sig;
+    var box = $('shares');
+    box.innerHTML = '';
+    if (!list.length) { box.appendChild(el('div', 'muted', 'Nothing is being shared.')); return; }
+    list.forEach(function (sh) {
+      var row = el('div', 'share' + (sh.id === pgm ? ' pgm' : sh.id === pvw ? ' pvw' : ''));
+      var name = el('div', 'name', sh.name);
+      name.appendChild(el('small', '', sh.id === pgm ? 'On air' : sh.id === pvw ? 'In Preview' : sh.live ? 'Live' : 'Reconnecting…'));
+      row.appendChild(name);
+      var cue = el('button', 'sm', 'Cue');
+      cue.title = 'Cue this share in Preview';
+      cue.onclick = function () { act('/api/preview', { item: { type: 'screen', src: sh.id } }); };
+      row.appendChild(cue);
+      var add = el('button', 'sm', '+ Rundown');
+      add.title = 'Add a row that shows this share (or, once it has ended, the latest share)';
+      add.onclick = function () { appendItem({ id: newId(), type: 'screen', src: sh.id, label: 'Screen: ' + sh.name }); toast('Added ' + sh.name); };
+      row.appendChild(add);
+      box.appendChild(row);
+    });
+  }
+  $('btnShare').onclick = function () { window.open(keyed('/share'), 'wall-share', 'width=560,height=720'); };
+  $('shareLink').href = keyed('/share');
 
   function renderHealth() {
     var n = health.displays;
@@ -1128,7 +1206,7 @@
     });
     title.appendChild(name);
     var sub = TYPE_NAMES[row.type] || row.type;
-    if (row.label && row.src) sub += ' · ' + nameFromSrc(row.src);
+    if (row.label && row.src && row.type !== 'screen') sub += ' · ' + nameFromSrc(row.src);
     else if (row.type === 'page') sub += ' · ' + row.src;
     if (row.notes) sub += ' · ' + row.notes;
     title.appendChild(el('div', 'sub', sub));
@@ -1282,6 +1360,7 @@
   };
   $('addValue').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('addBtn').click(); });
   $('addBlack').onclick = function () { appendItem({ id: newId(), type: 'black' }); };
+  $('addScreen').onclick = function () { appendItem({ id: newId(), type: 'screen' }); };
   $('addDefault').onclick = function () { appendItem({ id: newId(), type: 'default' }); };
 
   // ---------- as-run ----------
@@ -1559,7 +1638,10 @@
     $('srvAlert').hidden = !old;
   }
   function connect() {
-    var es = new EventSource('/events?role=control');
+    var es = new EventSource('/events?role=control' + (PEER ? '&peer=' + PEER : ''));
+    es.addEventListener('rtc', function (e) {
+      try { if (screens) screens.signal(JSON.parse(e.data)); } catch (err) {}
+    });
     es.onopen = function () {
       sseOk = true;
       renderConn();

@@ -18,7 +18,7 @@ const RUNDOWN_FILE = path.join(ROOT, 'rundowns.json');
 const ASRUN_FILE = path.join(ROOT, 'asrun.csv');
 
 const MAX_UPLOAD = 2 * 1024 * 1024 * 1024; // ~2 GB
-const TYPES = ['default', 'image', 'video', 'page', 'text', 'blank', 'black'];
+const TYPES = ['default', 'image', 'video', 'page', 'text', 'blank', 'black', 'screen'];
 const FITS = ['cover', 'contain', 'fill'];
 const HEX = /^#[0-9a-fA-F]{3,8}$/;
 const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
@@ -80,19 +80,22 @@ if (typeof state.takeId !== 'number') state.takeId = 0;
 if (typeof state.autoMs !== 'number') state.autoMs = 600;
 
 const clients = new Map(); // SSE response -> role ('display', 'preview', 'control', 'other')
+const peers = new Map(); // page id -> its SSE response, for screen-share setup messages meant for that page only
 
 function broadcast(event, data) {
   const msg = (event ? 'event: ' + event + '\n' : '') + 'data: ' + data + '\n\n';
   for (const res of clients.keys()) res.write(msg);
 }
 
-// The display reloads itself when its page changes, so OBS never needs a manual refresh.
-let displayHash = { mtime: 0, hash: '' };
+// The display reloads itself when its page (or the screen-share script it loads) changes, so
+// OBS never needs a manual refresh.
+const DISPLAY_FILES = ['display.html', 'screen.js'];
+let displayHash = { mtime: '', hash: '' };
 function displayVersion() {
   try {
-    const file = path.join(PUBLIC_DIR, 'display.html');
-    const st = fs.statSync(file);
-    if (st.mtimeMs !== displayHash.mtime) displayHash = { mtime: st.mtimeMs, hash: hashOf(fs.readFileSync(file)) };
+    const files = DISPLAY_FILES.map((f) => path.join(PUBLIC_DIR, f));
+    const mtime = files.map((f) => fs.statSync(f).mtimeMs).join('|');
+    if (mtime !== displayHash.mtime) displayHash = { mtime, hash: hashOf(Buffer.concat(files.map((f) => fs.readFileSync(f)))) };
   } catch (e) { /* keep last */ }
   return displayHash.hash;
 }
@@ -101,7 +104,7 @@ function hashOf(buf) {
 }
 
 function payload() {
-  return JSON.stringify(Object.assign({}, state, { now: Date.now(), displayVersion: displayVersion() }));
+  return JSON.stringify(Object.assign({}, state, { now: Date.now(), displayVersion: displayVersion(), shares: shareList() }));
 }
 
 // The change goes out to the display and control pages first, so a take never waits on the
@@ -352,6 +355,8 @@ function normalizeItem(input) {
     }
     item.src = src.slice(0, 4096);
   }
+  // A screen share names the share it shows; without one it shows whichever share started last.
+  if (item.type === 'screen' && input.src) item.src = String(input.src).slice(0, 64);
   if (item.type === 'text') item.text = String(input.text || '').slice(0, 5000);
   if (item.type === 'video') item.loop = !isFalse(input.loop);
   if (item.type === 'video' && isTrue(input.audio)) item.audio = true;
@@ -379,6 +384,7 @@ const TYPE_NAMES = { default: 'Default loop', blank: 'Blank', black: 'Black' };
 function itemLabel(it) {
   if (it.label) return it.label;
   if (it.type === 'text') return (it.text || '').replace(/\s+/g, ' ').slice(0, 60) || 'Text';
+  if (it.type === 'screen') return 'Screen: ' + (shares.has(it.src) ? shares.get(it.src).name : 'any share');
   if (it.src) return mediaNameFromSrc(it.src) || it.src;
   return TYPE_NAMES[it.type] || it.type;
 }
@@ -409,12 +415,130 @@ function itemFromQuery(q) {
   return { input };
 }
 
+// ---------- screen shares ----------
+
+// A /share page captures a screen in its browser and streams it straight to each page that
+// shows it (the OBS display and the control page's monitors) over WebRTC. The video never
+// passes through this server: it only relays the few setup messages, over the sharer's command
+// socket one way and the viewer's event stream and /api/rtc the other.
+const shares = new Map(); // id -> { id, name, socket, since, endTimer }
+const SHARE_ID = /^[a-z0-9]{8,40}$/i;
+const SHARE_GRACE = 8000; // a sharer whose socket drops has this long to come back
+
+function shareList() {
+  return Array.from(shares.values()).map((s) => ({ id: s.id, name: s.name, live: !!s.socket, since: s.since }));
+}
+
+function latestShare() {
+  let best = null;
+  for (const s of shares.values()) if (s.socket && (!best || s.since > best.since)) best = s;
+  return best;
+}
+
+// A screen item without a live share gets the latest one, if any.
+function withShare(item) {
+  if (!item || item.type !== 'screen' || shares.has(item.src)) return item;
+  const s = latestShare();
+  return s ? Object.assign({}, item, { src: s.id }) : item;
+}
+
+// Pages that may watch a share without the key: only while it is on air or cued, as
+// /display shows what's on air (and preloads what's cued) to anyone anyway.
+function shareInUse(id) {
+  return (state.type === 'screen' && state.src === id)
+    || (!!state.preview && state.preview.type === 'screen' && state.preview.src === id);
+}
+
+function toPeer(peer, msg) {
+  const res = peers.get(peer);
+  if (res) res.write('event: rtc\ndata: ' + JSON.stringify(msg) + '\n\n');
+}
+
+function shareStarted(socket, msg) {
+  if (!SHARE_ID.test(String(msg.id))) return;
+  const name = String(msg.name || '').trim().slice(0, 60) || 'Screen';
+  let s = shares.get(msg.id);
+  if (s) {
+    clearTimeout(s.endTimer);
+    if (s.socket && s.socket !== socket) s.socket.shareId = null;
+    Object.assign(s, { name, socket });
+  } else {
+    s = { id: msg.id, name, socket, since: Date.now(), endTimer: null };
+    shares.set(s.id, s);
+  }
+  if (socket.shareId && socket.shareId !== s.id) endShare(socket.shareId);
+  socket.shareId = s.id;
+  wsSend(socket, { type: 'share-ok', id: s.id });
+  // A cued screen item that had no share to show now has one.
+  const pv = state.preview;
+  if (pv && pv.type === 'screen' && !shares.has(pv.src)) commit({ preview: withShare(Object.assign({}, pv, { src: '' })) });
+  else broadcast(null, payload());
+}
+
+function shareSocketClosed(socket) {
+  const s = shares.get(socket.shareId);
+  if (!s || s.socket !== socket) return;
+  s.socket = null;
+  s.endTimer = setTimeout(() => endShare(s.id), SHARE_GRACE);
+  broadcast(null, payload());
+}
+
+function endShare(id) {
+  const s = shares.get(id);
+  if (!s) return;
+  clearTimeout(s.endTimer);
+  shares.delete(id);
+  if (s.socket) s.socket.shareId = null;
+  const patch = {};
+  const pv = state.preview;
+  if (pv && pv.type === 'screen' && pv.src === id) {
+    const row = pv.rid ? activeRundown().items.find((r) => r.id === pv.rid) : null;
+    patch.preview = row ? cueFromRow(row) : null;
+  }
+  if (state.type === 'screen' && state.src === id) takeItem({ type: 'default' }, state.autoMs, 'SHARE ENDED', patch);
+  else if (Object.keys(patch).length) commit(patch);
+  else broadcast(null, payload());
+}
+
+// A program share whose sharer never came back after a server restart.
+setTimeout(() => {
+  if (state.type === 'screen' && !shares.has(state.src)) takeItem({ type: 'default' }, state.autoMs, 'SHARE ENDED');
+}, 15000).unref();
+
+// From a sharer's command socket.
+function onShareMessage(socket, msg) {
+  if (msg.type === 'share') return shareStarted(socket, msg);
+  if (msg.type === 'share-stop') return socket.shareId && endShare(socket.shareId);
+  if (msg.type === 'rtc' && socket.shareId && typeof msg.peer === 'string' && msg.kind === 'offer') {
+    toPeer(msg.peer, { share: socket.shareId, kind: 'offer', sdp: msg.sdp });
+  }
+}
+
+// From a viewer: hello (send me an offer), answer, bye.
+function onViewerSignal(req, url, body) {
+  const s = shares.get(body.share);
+  const peer = String(body.peer || '');
+  if (body.kind === 'hello' && !authorized(req, url) && !(s && shareInUse(s.id))) return [403, { error: 'Not on air' }];
+  if (!s || !s.socket) return [404, { error: 'Share not live' }];
+  if (!peers.has(peer)) return [409, { error: 'Unknown page' }];
+  if (body.kind === 'hello') {
+    wsSend(s.socket, { type: 'rtc', kind: 'hello', peer, role: body.role === 'display' ? 'display' : 'preview' });
+  } else if (body.kind === 'answer' || body.kind === 'bye') {
+    wsSend(s.socket, { type: 'rtc', kind: body.kind, peer, sdp: body.sdp });
+  } else return [400, { error: 'Bad kind' }];
+  return [200, { ok: true }];
+}
+
 // ---------- switching ----------
 
 let endTimer = null;
 
 // Put an item on air.
 function takeItem(item, ms, action, extra) {
+  if (item.type === 'screen') {
+    item = withShare(item);
+    if (!shares.has(item.src)) item = { type: 'default' }; // its share has ended
+  }
   const patch = Object.assign({
     type: item.type,
     src: item.src || '',
@@ -456,7 +580,7 @@ function programAsItem() {
 }
 
 function cueFromRow(row) {
-  return Object.assign({}, row, { rid: row.id });
+  return withShare(Object.assign({}, row, { rid: row.id }));
 }
 
 function neighbour(rid, dir) {
@@ -469,6 +593,7 @@ function neighbour(rid, dir) {
 function takePreview(how, action) {
   const item = state.preview;
   if (!item) return 'Nothing in preview';
+  if (item.type === 'screen' && !shares.has(withShare(item).src)) return 'No screen is being shared';
   // Rundown items roll the preview on to the next row; anything else swaps with what was on air.
   const next = item.rid ? neighbour(item.rid, 1) : programAsItem();
   takeItem(item, how === 'cut' ? 0 : state.autoMs, action, { preview: next });
@@ -545,7 +670,7 @@ function setPreview(input) {
   if (input.clear) { commit({ preview: null }); return null; }
   const { item, error } = normalizeItem(input.item || input);
   if (error) return error;
-  commit({ preview: item });
+  commit({ preview: withShare(item) });
   return null;
 }
 
@@ -568,8 +693,8 @@ function setDefault(src) {
 function serveStatic(res, file) {
   fs.readFile(path.join(PUBLIC_DIR, file), (err, data) => {
     if (err) return send(res, 500, 'Missing ' + file);
-    if (file === 'display.html') data = data.toString('utf8').replace('__DISPLAY_VERSION__', hashOf(data));
-    send(res, 200, data, { 'Content-Type': MIME.html });
+    if (file === 'display.html') data = data.toString('utf8').replace('__DISPLAY_VERSION__', displayVersion());
+    send(res, 200, data, { 'Content-Type': file.endsWith('.js') ? 'text/javascript; charset=utf-8' : MIME.html });
   });
 }
 
@@ -594,8 +719,16 @@ function handleEvents(req, res, url) {
   res.write('retry: 2000\n\n');
   res.write('data: ' + payload() + '\n\n');
   clients.set(res, role);
+  const peer = url.searchParams.get('peer') || '';
+  if (SHARE_ID.test(peer)) peers.set(peer, res);
   sendHealth();
-  req.on('close', () => { clients.delete(res); sendHealth(); });
+  // A screen share already streaming to this page carries on through a reconnect: the video
+  // doesn't come through here, and the sharer drops it by itself if the page has gone.
+  req.on('close', () => {
+    clients.delete(res);
+    if (peers.get(peer) === res) peers.delete(peer);
+    sendHealth();
+  });
 }
 
 setInterval(() => {
@@ -798,6 +931,11 @@ const server = http.createServer(async (req, res) => {
       return res.end();
     }
     if (p === '/display' && m === 'GET') return serveStatic(res, 'display.html');
+    if (p === '/screen.js' && m === 'GET') return serveStatic(res, 'screen.js');
+    if (p === '/api/rtc' && m === 'POST') {
+      const [status, body] = onViewerSignal(req, url, await readJson(req, 64 * 1024));
+      return send(res, status, body);
+    }
     if (p === '/events' && m === 'GET') return handleEvents(req, res, url);
     if (p === '/api/state' && m === 'GET') return send(res, 200, state);
     if (p.startsWith('/media/') && (m === 'GET' || m === 'HEAD')) return handleMedia(req, res, p.slice(7));
@@ -826,11 +964,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Everything below needs the key (if set)
-    const isProtected = p === '/control' || p.startsWith('/api/');
+    const isProtected = p === '/control' || p === '/share' || p.startsWith('/api/');
     if (!isProtected) return send(res, 404, 'Not found');
     if (!authorized(req, url)) return send(res, 401, { error: 'Unauthorized' });
 
     if (p === '/control' && m === 'GET') return serveStatic(res, 'control.html');
+    if (p === '/share' && m === 'GET') return serveStatic(res, 'share.html');
 
     if (p === '/api/info' && m === 'GET') {
       return send(res, 200, { displayUrl: `http://localhost:${PORT}/display`, lanDisplayUrls: lanHosts().map((h) => `http://${h}:${PORT}/display`) });
@@ -931,6 +1070,7 @@ function onWsMessage(socket, text) {
   // The control page pings every couple of seconds: the reply proves the connection is alive,
   // and its server time lets the page stamp presses in server time (see command()).
   if (msg && msg.type === 'ping') return wsSend(socket, { type: 'pong', id: msg.id, now: Date.now() });
+  if (msg && /^(share|share-stop|rtc)$/.test(msg.type)) return onShareMessage(socket, msg);
   if (!msg || typeof msg.path !== 'string') return;
   let status, body;
   if (!COMMANDS.has(msg.path)) [status, body] = [404, { error: 'Not found' }];
@@ -954,6 +1094,7 @@ server.on('upgrade', (req, socket) => {
   socket.setNoDelay(true);
   socket.setKeepAlive(true, 20000);
   socket.on('error', () => socket.destroy());
+  socket.on('close', () => shareSocketClosed(socket));
 
   let buf = Buffer.alloc(0);
   socket.on('data', (chunk) => {
