@@ -48,6 +48,13 @@
   .tally.pgm { background: var(--pgm); color: #fff; }
   .muted { color: var(--muted); font-size: 13px; }
   .err { color: var(--danger); font-weight: 600; }
+  .stats { font: 12px/1.6 ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; color: var(--text); background: var(--panel2); border-radius: 8px; padding: 6px 10px; }
+  .stats .warn { color: var(--warn); }
+  details { font-size: 13px; color: var(--muted); }
+  summary { cursor: pointer; color: var(--text); font-weight: 600; }
+  .specs { display: grid; grid-template-columns: 90px 1fr; gap: 6px 12px; margin: 10px 0 0; }
+  .specs dt { color: var(--text); font-weight: 600; }
+  .specs dd { margin: 0; }
 </style>
 </head>
 <body>
@@ -57,11 +64,12 @@
     <label>Name on the control panel<input type="text" id="name" maxlength="60" placeholder="e.g. Andy's laptop"></label>
     <label>Optimise for
       <select id="hint">
-        <option value="detail">Text and slides (sharp)</option>
-        <option value="motion">Video and games (smooth)</option>
+        <option value="detail">Detail (hold resolution)</option>
+        <option value="motion">Motion (hold frame rate)</option>
       </select>
     </label>
   </div>
+  <div class="muted" id="hintInfo"></div>
   <label class="check"><input type="checkbox" id="withSound" checked> Share sound too (pick a tab, or the whole screen with "Share system audio" ticked; a window has no sound)</label>
   <div class="screen" id="screen"><video id="local" muted playsinline autoplay></video><div class="empty" id="empty">Not sharing</div></div>
   <div class="status">
@@ -74,6 +82,17 @@
     <button class="stop" id="btnStop" hidden>Stop sharing</button>
   </div>
   <div class="err" id="err" hidden></div>
+  <div class="stats" id="stats" hidden></div>
+  <details>
+    <summary>Stream specs</summary>
+    <dl class="specs">
+      <dt>Capture</dt><dd>Source resolution, capped at 1920×1080 (downscaled to fit, never upscaled). Up to 30 fps. Screen and window capture only produce a frame when the picture changes, so a still screen sends very few frames; tab capture runs at a steady rate.</dd>
+      <dt>To OBS</dt><dd>WebRTC, peer to peer (the server only sets the connection up). Codec <span id="specCodec">negotiated by the browsers</span>, up to 8 Mbps, 30 fps max. Bitrate adapts to the network and favours low latency (only a short jitter buffer on the receiving end), so a congested link shows as lower quality or dropped frames rather than growing delay.</dd>
+      <dt>Sound</dt><dd>Opus, 48 kHz stereo, up to 192 kbps, with echo cancellation, noise suppression and auto gain all off. Sent to the OBS display only.</dd>
+      <dt>Monitors</dt><dd>The control panel's Preview and Program monitors get a separate encode: one third size, 15 fps max, 600 kbps max, no sound.</dd>
+      <dt>Encoding load</dt><dd>This computer encodes one stream per viewer (OBS plus each open monitor), so a slow machine can drop frames. "Limited by: cpu" in the live stats means just that.</dd>
+    </dl>
+  </details>
   <div class="muted">Keep this tab open while sharing. Sharing a single window or tab avoids putting this page (or OBS) inside its own picture.</div>
 </section>
 <script src="/screen.js"></script>
@@ -102,8 +121,39 @@
   });
   $('hint').addEventListener('change', function () {
     try { localStorage.setItem('ws-share-hint', this.value); } catch (e) {}
-    if (stream) stream.getVideoTracks().forEach(function (t) { t.contentHint = $('hint').value; });
+    applyHint();
   });
+
+  // What "Optimise for" sets: the track's content hint (how the encoder treats the picture) and
+  // each video sender's degradation preference (what gives way when bandwidth or CPU runs short).
+  var HINTS = {
+    detail: {
+      pref: 'maintain-resolution',
+      info: 'contentHint "detail", degradationPreference "maintain-resolution". The encoder is tuned for screen content: sharp text, edges and flat colour. When bandwidth or CPU runs short it keeps the full resolution and lowers the frame rate. Best for slides, documents, spreadsheets, dashboards, UI.'
+    },
+    motion: {
+      pref: 'maintain-framerate',
+      info: 'contentHint "motion", degradationPreference "maintain-framerate". The encoder treats it like a camera feed. When bandwidth or CPU runs short it keeps the frame rate and lowers the resolution, so movement stays smooth but fine text softens. Best for video playback, games, animation.'
+    }
+  };
+  function applyHint() {
+    var h = HINTS[$('hint').value] || HINTS.detail;
+    $('hintInfo').textContent = h.info;
+    if (!stream) return;
+    stream.getVideoTracks().forEach(function (t) { t.contentHint = $('hint').value; });
+    Object.keys(pcs).forEach(function (p) { setPreference(pcs[p]); });
+  }
+  function setPreference(pc) {
+    var h = HINTS[$('hint').value] || HINTS.detail;
+    pc.getSenders().forEach(function (snd) {
+      if (!snd.track || snd.track.kind !== 'video') return;
+      var params = snd.getParameters();
+      if (!params.encodings || !params.encodings.length) return; // not negotiated yet
+      params.degradationPreference = h.pref;
+      snd.setParameters(params).catch(function () {});
+    });
+  }
+  applyHint();
 
   function showError(msg) { $('err').textContent = msg; $('err').hidden = !msg; }
 
@@ -161,6 +211,7 @@
     closePeer(peer);
     var pc = pcs[peer] = new RTCPeerConnection({ iceServers: window.SCREEN_ICE });
     var full = role === 'display';
+    pc.role = role;
     stream.getVideoTracks().forEach(function (t) {
       pc.addTransceiver(t, {
         direction: 'sendonly',
@@ -182,7 +233,7 @@
     };
     pc.createOffer()
       .then(function (o) { return pc.setLocalDescription(o); })
-      .then(function () { return window.screenGathered(pc); })
+      .then(function () { setPreference(pc); return window.screenGathered(pc); })
       .then(function () {
         if (pcs[peer] === pc) sendSock({ type: 'rtc', kind: 'offer', peer: peer, sdp: pc.localDescription });
       })
@@ -247,6 +298,55 @@
   $('btnCue').onclick = function () {
     sendSock({ id: 'cue', path: '/api/preview', body: { item: { type: 'screen', src: shareId } } });
   };
+
+  // ---------- live stats ----------
+  // What is actually going to each OBS display, from the browser's own encoder statistics.
+  var lastBytes = {}; // stats id -> { bytes, at }
+  function kbps(id, bytes, at) {
+    var prev = lastBytes[id];
+    lastBytes[id] = { bytes: bytes, at: at };
+    return prev && at > prev.at ? (bytes - prev.bytes) * 8 / (at - prev.at) : null; // at is in ms, so bits/ms = kbps
+  }
+  function fmtRate(k) { return k === null ? '…' : k >= 1000 ? (k / 1000).toFixed(1) + ' Mbps' : Math.round(k) + ' kbps'; }
+  setInterval(function () {
+    var displays = Object.keys(pcs).filter(function (p) { return pcs[p].role === 'display' && pcs[p].connectionState === 'connected'; });
+    $('stats').hidden = !stream || !displays.length;
+    if ($('stats').hidden) return;
+    Promise.all(displays.map(function (p) { return pcs[p].getStats(); })).then(function (all) {
+      $('stats').innerHTML = '';
+      all.forEach(function (report, i) {
+        var v = null, a = null, codecs = {}, pair = null;
+        report.forEach(function (s) {
+          if (s.type === 'outbound-rtp' && s.kind === 'video') v = s;
+          if (s.type === 'outbound-rtp' && s.kind === 'audio') a = s;
+          if (s.type === 'codec') codecs[s.id] = s;
+          if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s;
+        });
+        var line = document.createElement('div');
+        var parts = [];
+        if (v) {
+          var codec = codecs[v.codecId] ? codecs[v.codecId].mimeType.split('/')[1] : '?';
+          if (codecs[v.codecId]) $('specCodec').textContent = codec + ' (as negotiated now)';
+          parts.push((v.frameWidth || 0) + '×' + (v.frameHeight || 0));
+          parts.push((v.framesPerSecond ? Math.round(v.framesPerSecond) : 0) + ' fps');
+          parts.push(codec);
+          parts.push(fmtRate(kbps(v.id + displays[i], v.bytesSent, v.timestamp)));
+          if (v.encoderImplementation) parts.push(v.encoderImplementation);
+        }
+        if (a) parts.push('Opus ' + fmtRate(kbps(a.id + displays[i], a.bytesSent, a.timestamp)));
+        if (pair && pair.currentRoundTripTime !== undefined) parts.push('RTT ' + Math.round(pair.currentRoundTripTime * 1000) + ' ms');
+        line.textContent = 'To OBS' + (all.length > 1 ? ' ' + (i + 1) : '') + ': ' + parts.join(' · ');
+        var why = v && v.qualityLimitationReason;
+        if (why && why !== 'none') {
+          var w = document.createElement('span');
+          w.className = 'warn';
+          w.textContent = ' · limited by: ' + why;
+          line.appendChild(w);
+        }
+        $('stats').appendChild(line);
+      });
+    }).catch(function () {});
+  }, 1000);
 
   // ---------- status ----------
   function render() {
