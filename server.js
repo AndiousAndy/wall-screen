@@ -647,6 +647,7 @@ function applyShow(input) {
     });
     const { item, error } = normalizeItem(full);
     if (error) return error;
+    if (item.type === 'screen' && !shares.has(withShare(item).src)) return 'No screen is being shared';
     takeItem(item, state.autoMs, 'PUNCH');
     return null;
   }
