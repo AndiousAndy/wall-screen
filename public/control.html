@@ -1128,7 +1128,8 @@
   function shareVerdict(tx, rx) {
     if (!tx) return '';
     var want = /60$/.test(tx.output || '') ? 60 : 30, low = function (n, of) { return n !== undefined && n < of * 0.8; };
-    if (low(tx.captureFps, want)) return '⚠ Capture is only producing ' + r(tx.captureFps) + ' fps: the bottleneck is the screen capture itself (a still or slow-changing picture also captures few frames).';
+    if (low(tx.captureFps, want)) return '⚠ Capture is only producing ' + r(tx.captureFps) + ' fps: the bottleneck is the capture on the sharing computer. Chrome only captures a frame when the '
+      + (tx.surface === 'browser' ? 'tab repaints, so either what is in the tab updates that slowly, or Chrome is rendering the tab slowly (keep it visible, in its own window).' : 'picture changes, so either the content updates that slowly, or the capture itself is slow.');
     if (low(tx.sentFps, tx.captureFps)) return '⚠ The sharing computer\'s encoder is dropping frames (' + r(tx.captureFps) + ' captured, ' + r(tx.sentFps) + ' sent)' + (tx.limit && tx.limit !== 'none' ? ': limited by ' + tx.limit : '') + '.';
     if (!rx) return '';
     if (rx.visible === 'hidden') return '⚠ The OBS display page is hidden, so it isn\'t drawing frames: the browser source isn\'t visible in the current scene, or "Shutdown source when not visible" is ticked.';
