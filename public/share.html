@@ -129,7 +129,7 @@
       <dt>Under load</dt><dd>What gives way when the encoder or network can't keep up. "Hold resolution + fps" (degradationPreference maintain-framerate-and-resolution) keeps the Output format fixed and lets quantisation rise instead, so the picture softens but never changes size or rate; frames are only dropped if the CPU can't encode them at all.</dd>
       <dt>Content</dt><dd>The track's contentHint. "detail" tunes the encoder for screen content (sharp text, edges, flat colour); "motion" tunes it like a camera feed.</dd>
       <dt>Sound</dt><dd>Opus, 48 kHz stereo, up to 192 kbps, with echo cancellation, noise suppression and auto gain all off. Sent to the OBS display only.</dd>
-      <dt>Monitors</dt><dd>The control panel's Preview and Program monitors get a separate encode: one third size, 15 fps max, 600 kbps max, no sound.</dd>
+      <dt>Monitors</dt><dd>The control panel's Preview and Program monitors get a separate encode: one third size, 1 Mbps max, no sound, at the full frame rate. Their frame rate is never capped or cut, because all connections share one capture: a lower rate asked for by any of them slows the stream to OBS too.</dd>
       <dt>Encoding load</dt><dd>This computer encodes one stream per viewer (OBS plus each open monitor), so a slow machine can drop frames. "Limited by: cpu" in the live stats means just that.</dd>
     </dl>
   </details>
@@ -171,7 +171,7 @@
     $(k).addEventListener('change', function () {
       try { localStorage.setItem('ws-share-' + k, this.value); } catch (e) {}
       if (k === 'fmt') { detectCodec(); constrain(); }
-      if (k === 'hint' && stream) stream.getVideoTracks().forEach(function (t) { t.contentHint = $('hint').value; });
+      if (k === 'hint') eachTrack(function (t) { t.contentHint = $('hint').value; });
       if (k === 'degrade' || k === 'hint') Object.keys(pcs).forEach(function (p) { setPreference(pcs[p]); });
       if (k === 'fmt' || k === 'rate' || k === 'codec') reconnectDisplays();
       describe();
@@ -185,7 +185,7 @@
     return { width: { max: f[0] }, height: { max: f[1] }, frameRate: { ideal: f[2], max: f[2] } };
   }
   function constrain() {
-    if (stream) stream.getVideoTracks().forEach(function (t) { t.applyConstraints(captureConstraints()).catch(function () {}); });
+    eachTrack(function (t) { t.applyConstraints(captureConstraints()).catch(function () {}); });
   }
 
   // Auto codec: the first one this computer encodes in hardware at the Output format.
@@ -242,7 +242,9 @@
       if (!snd.track || snd.track.kind !== 'video') return;
       var params = snd.getParameters();
       if (!params.encodings || !params.encodings.length) return; // not negotiated yet
-      params.degradationPreference = pc.role === 'display' ? $('degrade').value : 'balanced';
+      // The monitors give up resolution, never frame rate: a frame-rate cut on any connection
+      // slows the shared capture, and with it the stream to OBS.
+      params.degradationPreference = pc.role === 'display' ? $('degrade').value : 'maintain-framerate';
       // The encoder never sends more than the Output size, even if the capture comes in bigger.
       if (pc.role === 'display') params.encodings[0].scaleResolutionDownBy = downscale(snd.track);
       snd.setParameters(params).catch(function () {
@@ -343,7 +345,22 @@
     if (!pc) return;
     delete pcs[peer];
     pc.close();
+    if (pc.videoTrack) pc.videoTrack.stop();
     render();
+  }
+
+  // Each connection sends its own clone of the captured track. Connections fed by one track
+  // share one frame source, and WebRTC runs that source at the lowest frame rate and size any of
+  // them asks for: the monitors' small 15 fps copy dragged OBS's stream down to 10-15 fps.
+  function cloneFor(track) {
+    var c = track.clone();
+    c.contentHint = $('hint').value;
+    c.applyConstraints(captureConstraints()).catch(function () {});
+    return c;
+  }
+  function eachTrack(fn) {
+    if (stream) stream.getVideoTracks().forEach(fn);
+    Object.keys(pcs).forEach(function (p) { if (pcs[p].videoTrack) fn(pcs[p].videoTrack); });
   }
 
   function offer(peer, role) {
@@ -352,13 +369,13 @@
     var pc = pcs[peer] = new RTCPeerConnection({ iceServers: window.SCREEN_ICE });
     var full = role === 'display';
     pc.role = role;
-    stream.getVideoTracks().forEach(function (t) {
-      var tr = pc.addTransceiver(t, {
+    stream.getVideoTracks().slice(0, 1).forEach(function (t) {
+      var tr = pc.addTransceiver(pc.videoTrack = cloneFor(t), {
         direction: 'sendonly',
         streams: [stream],
         sendEncodings: [full
           ? { maxBitrate: targetKbps() * 1200, maxFramerate: fmt()[2], priority: 'high', networkPriority: 'high' }
-          : { maxBitrate: 600000, maxFramerate: 15, scaleResolutionDownBy: 3 }]
+          : { maxBitrate: 1000000, scaleResolutionDownBy: 3 }]
       });
       if (full) preferCodec(tr);
     });
@@ -412,9 +429,14 @@
     var audio = s.getAudioTracks()[0] || null;
     if (audio) audio.contentHint = 'music';
     Object.keys(pcs).forEach(function (p) {
-      pcs[p].getTransceivers().forEach(function (tr) {
+      var pc = pcs[p];
+      pc.getTransceivers().forEach(function (tr) {
         var kind = tr.receiver.track.kind;
-        if (kind === 'video' && track) tr.sender.replaceTrack(track).catch(function () {});
+        if (kind === 'video' && track) {
+          var was = pc.videoTrack;
+          pc.videoTrack = cloneFor(track);
+          tr.sender.replaceTrack(pc.videoTrack).then(function () { if (was) was.stop(); }, function () {});
+        }
         if (kind === 'audio') tr.sender.replaceTrack(audio).catch(function () {});
       });
     });
