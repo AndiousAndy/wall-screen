@@ -224,6 +224,9 @@
   .share.pgm { border-color: var(--pgm); }
   .share .name { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .share .name small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
+  .sstats { font: 11px/1.5 var(--mono); color: var(--muted); padding: 2px 10px 4px; white-space: normal; }
+  .sstats b { color: var(--text); font-weight: 600; }
+  .sstats .bad { color: var(--warn); font-weight: 600; }
 
   .default-box { display: flex; gap: 12px; align-items: center; }
   .default-thumb { width: 140px; flex: none; aspect-ratio: 16/9; background: #000; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
@@ -1071,7 +1074,68 @@
       add.onclick = function () { appendItem({ id: newId(), type: 'screen', src: sh.id, label: 'Screen: ' + sh.name }); toast('Added ' + sh.name); };
       row.appendChild(add);
       box.appendChild(row);
+      var st = el('div', 'sstats');
+      st.id = 'sstats-' + sh.id;
+      box.appendChild(st);
+      paintShareStats(sh.id);
     });
+  }
+
+  // Both ends of the OBS connection, so a share that isn't smooth shows where it loses frames.
+  var rtcStats = {}; // share id -> { sender, display }
+  function onRtcStats(m) {
+    var s = rtcStats[m.share] = rtcStats[m.share] || {};
+    var prev = s[m.from];
+    // Bitrate from the byte counters of consecutive reports.
+    if (prev && m.stats.at > prev.at) {
+      var b = m.from === 'sender' ? 'bytesSent' : 'bytes';
+      if (m.stats[b] >= prev[b]) m.stats.kbps = (m.stats[b] - prev[b]) * 8 / (m.stats.at - prev.at);
+    }
+    s[m.from] = m.stats;
+    paintShareStats(m.share);
+  }
+  function r(n) { return n === undefined || n === null ? '–' : Math.round(n); }
+  function mbps(k) { return k === undefined ? '–' : (k / 1000).toFixed(1) + ' Mbps'; }
+  function paintShareStats(id) {
+    var box = $('sstats-' + id), s = rtcStats[id];
+    if (!box) return;
+    box.innerHTML = '';
+    if (!s) return;
+    var now = serverNow(), tx = s.sender, rx = s.display;
+    var lines = [];
+    if (tx && now - tx.at < 6000) {
+      lines.push(['Sharer', (tx.surface || '?') + ' ' + r(tx.captureWidth) + '×' + r(tx.captureHeight)
+        + ' · captured ' + r(tx.captureFps) + ' fps · sent ' + r(tx.width) + '×' + r(tx.height) + ' ' + r(tx.sentFps) + ' fps · '
+        + (tx.codec || '?') + (tx.hwEncoder === true ? ' hw' : tx.hwEncoder === false ? ' sw' : '') + (tx.encodeMs !== undefined ? ' ' + tx.encodeMs.toFixed(1) + ' ms/frame' : '')
+        + ' · ' + mbps(tx.kbps) + (tx.limit && tx.limit !== 'none' ? ' · limited by ' + tx.limit : '') + ' · ' + (tx.output || '') + ' ' + (tx.ua || '')]);
+    }
+    if (rx && now - rx.at < 6000) {
+      lines.push(['OBS', 'received ' + r(rx.fps) + ' fps · shown ' + r(rx.shownFps) + ' fps · page ' + r(rx.pageFps) + ' fps · '
+        + r(rx.width) + '×' + r(rx.height) + ' ' + (rx.codec || '') + ' · dropped ' + r(rx.framesDropped) + ' · freezes ' + r(rx.freezeCount)
+        + ' · lost ' + r(rx.packetsLost) + ' pkts · jitter buffer ' + r(rx.jitterMs) + ' ms · decode ' + (rx.decodeMs !== undefined ? rx.decodeMs.toFixed(1) : '–') + ' ms'
+        + (rx.decoder ? ' ' + rx.decoder : '') + ' · ' + mbps(rx.kbps)]);
+    }
+    lines.forEach(function (l) {
+      var d = el('div');
+      d.appendChild(el('b', '', l[0] + ': '));
+      d.appendChild(document.createTextNode(l[1]));
+      box.appendChild(d);
+    });
+    var v = shareVerdict(tx && now - tx.at < 6000 ? tx : null, rx && now - rx.at < 6000 ? rx : null);
+    if (v) box.appendChild(el('div', 'bad', v));
+  }
+  // Where frames go missing, first stage that falls short wins.
+  function shareVerdict(tx, rx) {
+    if (!tx) return '';
+    var want = /60$/.test(tx.output || '') ? 60 : 30, low = function (n, of) { return n !== undefined && n < of * 0.8; };
+    if (low(tx.captureFps, want)) return '⚠ Capture is only producing ' + r(tx.captureFps) + ' fps: the bottleneck is the screen capture itself (a still or slow-changing picture also captures few frames).';
+    if (low(tx.sentFps, tx.captureFps)) return '⚠ The sharing computer\'s encoder is dropping frames (' + r(tx.captureFps) + ' captured, ' + r(tx.sentFps) + ' sent)' + (tx.limit && tx.limit !== 'none' ? ': limited by ' + tx.limit : '') + '.';
+    if (!rx) return '';
+    if (rx.visible === 'hidden') return '⚠ The OBS display page is hidden, so it isn\'t drawing frames: the browser source isn\'t visible in the current scene, or "Shutdown source when not visible" is ticked.';
+    if (low(rx.fps, tx.sentFps)) return '⚠ Frames are lost between the sharer and OBS (' + r(tx.sentFps) + ' sent, ' + r(rx.fps) + ' decoded in OBS): network or OBS\'s decoder.';
+    if (low(rx.pageFps, want)) return '⚠ OBS is only rendering the browser source at ' + r(rx.pageFps) + ' fps: set the browser source\'s FPS to match the canvas (untick "Use custom frame rate" or set ' + want + ').';
+    if (rx.shownFps !== undefined && low(rx.shownFps, rx.fps)) return '⚠ OBS decodes ' + r(rx.fps) + ' fps but only shows ' + r(rx.shownFps) + ': OBS\'s browser is struggling to draw it (check browser source hardware acceleration).';
+    return '';
   }
   $('btnShare').onclick = function () { window.open(keyed('/share'), 'wall-share', 'width=560,height=720'); };
   $('shareLink').href = keyed('/share');
@@ -1648,6 +1712,9 @@
     var es = new EventSource('/events?role=control' + (PEER ? '&peer=' + PEER : ''));
     es.addEventListener('rtc', function (e) {
       try { if (screens) screens.signal(JSON.parse(e.data)); } catch (err) {}
+    });
+    es.addEventListener('rtcstats', function (e) {
+      try { onRtcStats(JSON.parse(e.data)); } catch (err) {}
     });
     es.onopen = function () {
       sseOk = true;

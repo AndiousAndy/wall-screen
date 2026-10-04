@@ -114,6 +114,36 @@
         });
       },
       stream: function (id) { return conns[id] ? conns[id].stream : null; },
+      // The receiving side of each connected share, from the browser's own statistics.
+      stats: function () {
+        return Promise.all(Object.keys(conns).map(function (id) {
+          var pc = conns[id].pc;
+          if (!pc || pc.connectionState !== 'connected') return null;
+          return pc.getStats().then(function (report) {
+            var v = null, a = null, codecs = {}, pair = null;
+            report.forEach(function (s) {
+              if (s.type === 'inbound-rtp' && s.kind === 'video') v = s;
+              if (s.type === 'inbound-rtp' && s.kind === 'audio') a = s;
+              if (s.type === 'codec') codecs[s.id] = s;
+              if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s;
+            });
+            if (!v) return null;
+            return {
+              share: id, at: v.timestamp,
+              framesReceived: v.framesReceived, framesDecoded: v.framesDecoded, framesDropped: v.framesDropped,
+              fps: v.framesPerSecond, width: v.frameWidth, height: v.frameHeight,
+              freezeCount: v.freezeCount, freezeSeconds: v.totalFreezesDuration,
+              jitterMs: v.jitterBufferEmittedCount ? v.jitterBufferDelay / v.jitterBufferEmittedCount * 1000 : undefined,
+              decodeMs: v.framesDecoded ? v.totalDecodeTime / v.framesDecoded * 1000 : undefined,
+              packetsLost: v.packetsLost, nacks: v.nackCount, plis: v.pliCount, bytes: v.bytesReceived,
+              decoder: v.decoderImplementation, hwDecoder: v.powerEfficientDecoder,
+              codec: codecs[v.codecId] ? codecs[v.codecId].mimeType.split('/')[1] : '',
+              audioBytes: a ? a.bytesReceived : undefined,
+              rttMs: pair && pair.currentRoundTripTime !== undefined ? pair.currentRoundTripTime * 1000 : undefined
+            };
+          });
+        })).then(function (list) { return list.filter(Boolean); });
+      },
       // An offer from the event stream: { share, kind, sdp }.
       signal: function (m) { if (m && m.kind === 'offer') onOffer(m.share, m.sdp); }
     };

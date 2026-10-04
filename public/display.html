@@ -76,8 +76,38 @@
     v.play().catch(function () {});
   }
 
+  // Frames the page actually puts on screen: the share's video (as composited) and the page
+  // itself (requestAnimationFrame runs at the rate OBS renders the browser source).
+  var painted = 0;
+  (function paint() { painted++; requestAnimationFrame(paint); })();
+  function countShown(v) {
+    v.shown = 0;
+    if (!v.requestVideoFrameCallback) return;
+    var cb = function () { v.shown++; v.requestVideoFrameCallback(cb); }; // stops by itself once the element is gone
+    v.requestVideoFrameCallback(cb);
+  }
+
+  // The OBS display reports how each share arrives, every 2 seconds, for the control panel.
+  var lastReport = { at: 0, painted: 0, shown: {} };
+  if (!isPreview && screens) setInterval(function () {
+    screens.stats().then(function (list) {
+      var now = performance.now(), secs = (now - lastReport.at) / 1000, shownNow = {};
+      list.forEach(function (s) {
+        var v = document.querySelector('.layer.front video[data-share="' + s.share + '"]');
+        shownNow[s.share] = v ? v.shown : null;
+        if (lastReport.at && v && lastReport.shown[s.share] !== undefined && lastReport.shown[s.share] !== null) s.shownFps = (v.shown - lastReport.shown[s.share]) / secs;
+        if (lastReport.at) s.pageFps = (painted - lastReport.painted) / secs;
+        s.onAir = !!v;
+        s.visible = document.visibilityState;
+      });
+      lastReport = { at: now, painted: painted, shown: shownNow };
+      if (list.length) post('/api/rtcstats', { role: 'display', stats: list });
+    });
+  }, 2000);
+
   function makeScreen(id) {
     var v = document.createElement('video');
+    countShown(v);
     v.dataset.share = id || '';
     v.muted = true; v.setAttribute('muted', ''); v.setAttribute('playsinline', '');
     v.autoplay = true;

@@ -492,6 +492,7 @@ function endShare(id) {
   if (!s) return;
   clearTimeout(s.endTimer);
   shares.delete(id);
+  shareStats.delete(id);
   if (s.socket) s.socket.shareId = null;
   const patch = {};
   const pv = state.preview;
@@ -516,6 +517,32 @@ function onShareMessage(socket, msg) {
   if (msg.type === 'rtc' && socket.shareId && typeof msg.peer === 'string' && msg.kind === 'offer') {
     toPeer(msg.peer, { share: socket.shareId, kind: 'offer', sdp: msg.sdp });
   }
+  if (msg.type === 'share-stats' && socket.shareId) noteStats(socket.shareId, 'sender', msg.stats);
+}
+
+// ---------- screen share stats ----------
+
+// Both ends of each OBS connection report what they actually do (the sharer: captured and sent
+// frames; the OBS display: received, decoded and shown frames), so the control panel can show
+// where a share loses frames or quality. Relayed and kept briefly, never saved.
+const shareStats = new Map(); // share id -> { sender, display, at }
+
+function cleanStats(obj) {
+  const out = {};
+  if (!obj || typeof obj !== 'object') return out;
+  for (const [k, v] of Object.entries(obj).slice(0, 40)) {
+    if (typeof v === 'number' && isFinite(v)) out[k.slice(0, 40)] = v;
+    else if (typeof v === 'string' || typeof v === 'boolean') out[k.slice(0, 40)] = typeof v === 'string' ? v.slice(0, 80) : v;
+  }
+  return out;
+}
+
+function noteStats(id, from, stats) {
+  if (!shares.has(id)) return;
+  const entry = shareStats.get(id) || {};
+  entry[from] = Object.assign(cleanStats(stats), { at: Date.now() });
+  shareStats.set(id, entry);
+  broadcast('rtcstats', JSON.stringify({ share: id, from, stats: entry[from] }));
 }
 
 // From a viewer: hello (send me an offer), answer, bye.
@@ -937,6 +964,12 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/display' && m === 'GET') return serveStatic(res, 'display.html');
     if (p === '/screen.js' && m === 'GET') return serveStatic(res, 'screen.js');
+    if (p === '/api/rtcstats' && m === 'POST') {
+      const body = await readJson(req, 16 * 1024);
+      // Only the OBS display's report is kept; previews receive a deliberately small copy.
+      if (body.role === 'display' && Array.isArray(body.stats)) body.stats.slice(0, 8).forEach((s) => s && noteStats(String(s.share), 'display', s));
+      return send(res, 204, '');
+    }
     if (p === '/api/rtc' && m === 'POST') {
       const [status, body] = onViewerSignal(req, url, await readJson(req, 64 * 1024));
       return send(res, status, body);
@@ -1010,6 +1043,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/asrun' && m === 'GET') return send(res, 200, asrun);
+    if (p === '/api/rtcstats' && m === 'GET') return send(res, 200, Object.fromEntries(shareStats));
     if (p === '/api/asrun.csv' && m === 'GET') return handleAsrunCsv(res);
 
     if (p === '/api/show' && m === 'GET') {
@@ -1075,7 +1109,7 @@ function onWsMessage(socket, text) {
   // The control page pings every couple of seconds: the reply proves the connection is alive,
   // and its server time lets the page stamp presses in server time (see command()).
   if (msg && msg.type === 'ping') return wsSend(socket, { type: 'pong', id: msg.id, now: Date.now() });
-  if (msg && /^(share|share-stop|rtc)$/.test(msg.type)) return onShareMessage(socket, msg);
+  if (msg && /^(share|share-stop|rtc|share-stats)$/.test(msg.type)) return onShareMessage(socket, msg);
   if (!msg || typeof msg.path !== 'string') return;
   let status, body;
   if (!COMMANDS.has(msg.path)) [status, body] = [404, { error: 'Not found' }];

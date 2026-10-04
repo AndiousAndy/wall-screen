@@ -491,9 +491,32 @@
           line.appendChild(w);
         }
         $('stats').appendChild(line);
+        if (i === 0) report0 = { v: v, src: src, codec: v && codecs[v.codecId] ? codecs[v.codecId].mimeType.split('/')[1] : '', pair: pair };
       });
+      reportStats();
     }).catch(function () {});
   }, 1000);
+
+  // The same numbers (and what is being captured) go to the control panel, every 2 seconds.
+  var report0 = null, reportedAt = 0;
+  function reportStats() {
+    if (!report0 || Date.now() - reportedAt < 1900) return;
+    reportedAt = Date.now();
+    var v = report0.v || {}, src = report0.src || {}, track = stream && stream.getVideoTracks()[0];
+    var set = track && track.getSettings ? track.getSettings() : {};
+    var q = v.qualityLimitationDurations || {};
+    sendSock({ type: 'share-stats', stats: {
+      surface: set.displaySurface || '', captureWidth: set.width, captureHeight: set.height, captureFpsSetting: set.frameRate,
+      captureFps: src.framesPerSecond, sentFps: v.framesPerSecond, width: v.frameWidth, height: v.frameHeight,
+      codec: report0.codec, encoder: v.encoderImplementation, hwEncoder: v.powerEfficientEncoder,
+      encodeMs: v.framesEncoded ? v.totalEncodeTime / v.framesEncoded * 1000 : undefined,
+      bytesSent: v.bytesSent, at: v.timestamp, targetBitrate: v.targetBitrate,
+      limit: v.qualityLimitationReason, cpuLimitedSecs: q.cpu, bandwidthLimitedSecs: q.bandwidth,
+      framesEncoded: v.framesEncoded, framesSent: v.framesSent, hugeFrames: v.hugeFramesSent,
+      output: $('fmt').value, under: $('degrade').value, hint: $('hint').value, codecSetting: $('codec').value,
+      ua: navigator.userAgent.replace(/^.*\) /, '').slice(0, 80)
+    } });
+  }
 
   // ---------- status ----------
   function render() {
