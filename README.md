@@ -71,7 +71,7 @@ The source's bounds never change (it's always 1920x1080, whatever is showing), s
 
 ### Audio
 
-Videos are silent on the wall unless you turn their sound on: the **Sound** column in the rundown, or the **Muted / Sound** switch under Preview (before the take) or Program (live, without restarting the video). Sound fades in and out with AUTO dissolves. The default loop, images and the control page's monitors are always silent.
+Videos (and screen shares) are silent on the wall unless you turn their sound on: the **Sound** column in the rundown, or the **Muted / Sound** switch under Preview (before the take) or Program (live, without restarting the video). Sound fades in and out with AUTO dissolves. The default loop, images and the control page's monitors are always silent.
 
 To get the wall's sound in OBS, tick **Control audio via OBS** on the browser source. It then appears as its own channel in OBS's audio mixer, where you set its level and filters. Without the tick, the sound goes straight to your desktop audio.
 
@@ -90,8 +90,12 @@ Any computer with Chrome or Edge can put its screen on the wall through the same
 - **+ Screen share** under the rundown adds a row that shows whichever share started last, so a rundown can hold a "screen" slot before anyone is sharing. **+ Rundown** on a share adds a row for that share.
 - Keep the share tab open. Stopping (the page's button, Chrome's own "Stop sharing" bar, or closing the tab) takes the wall back to the default loop.
 - **Share something else** switches what's shared without dropping off the wall.
-- Picture only, no sound. **Optimise for** picks sharp text (slides, documents) or smooth motion (video, games).
+- **Optimise for** picks sharp text (slides, documents) or smooth motion (video, games).
 - Share a single window or tab, not the whole screen, on the streaming PC, or the wall ends up showing OBS inside itself.
+
+**Sound.** With **Share sound too** ticked, Chrome's picker offers the sound as well: a **tab** always can, the **whole screen** can on Windows (tick "Share system audio"), a **window** can't. The share page says "With sound" or "No sound". A share goes on the wall muted, like a video: turn it on with the **Muted / Sound** switch under Preview or Program, or the Sound button on its rundown row. It reaches OBS the same way as video sound (see Audio above), in stereo, and only the OBS display gets it; the control panel's monitors stay silent.
+
+On the streaming PC, share a tab's sound rather than system audio: system audio there includes whatever OBS and the desktop play, which would echo back into the stream.
 
 The video goes straight from the sharing browser to OBS (WebRTC); the server only passes on the few messages that set up the connection, so a share keeps playing even through a server restart. The OBS display gets full quality; the control panel's monitors get a small copy.
 

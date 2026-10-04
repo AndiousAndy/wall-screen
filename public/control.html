@@ -611,6 +611,7 @@
   }
   var TYPE_NAMES = { video: 'Video', image: 'Image', page: 'Web page', text: 'Text', blank: 'Blank', black: 'Black', 'default': 'Default loop', screen: 'Screen share' };
   var TYPE_BADGE = { page: 'WEB', text: 'TEXT', blank: 'BLANK', black: 'BLACK', 'default': 'DEF', screen: 'SCREEN' };
+  function hasSound(type) { return type === 'video' || type === 'screen'; }
   function findShare(id) {
     var list = (state && state.shares) || [];
     for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
@@ -762,9 +763,11 @@
     var it = state.preview;
     $('pvwName').textContent = it ? itemLabel(it) : 'Nothing cued';
     var isVid = !!it && it.type === 'video';
-    $('pvwLoop').hidden = $('pvwSound').hidden = !isVid;
+    var sound = !!it && hasSound(it.type);
+    $('pvwLoop').hidden = !isVid;
+    $('pvwSound').hidden = !sound;
     paintLoopTog($('pvwLoop'), isVid && it.loop !== false);
-    paintSoundTog($('pvwSound'), isVid && !!it.audio);
+    paintSoundTog($('pvwSound'), sound && !!it.audio);
 
     var fit = (it && it.fit) || state.fit || 'cover';
     var bg = (it && it.bg) || state.bg || '#000';
@@ -867,7 +870,7 @@
 
   $('pvwSound').addEventListener('click', function (e) {
     var s = e.target.dataset && e.target.dataset.audio;
-    if (!s || !state.preview || state.preview.type !== 'video') return;
+    if (!s || !state.preview || !hasSound(state.preview.type)) return;
     var on = s === '1';
     if (state.preview.rid && findRow(state.preview.rid)) updateRow(state.preview.rid, { audio: on });
     else act('/api/preview', { item: Object.assign({}, state.preview, { audio: on }) });
@@ -889,7 +892,7 @@
   });
   $('pgmSound').addEventListener('click', function (e) {
     var s = e.target.dataset && e.target.dataset.audio;
-    if (!s || !state || state.type !== 'video') return;
+    if (!s || !state || !hasSound(state.type)) return;
     var on = s === '1', rid = state.onAir && state.onAir.rid;
     // An on-air rundown row is changed in the rundown, so a later rundown save doesn't undo it.
     if (rid && findRow(rid)) updateRow(rid, { audio: on });
@@ -1000,9 +1003,10 @@
     if (!state) return;
     $('pgmName').textContent = itemLabel(programItem());
     var isVideo = state.type === 'video';
-    $('pgmLoop').hidden = $('pgmSound').hidden = !isVideo;
+    $('pgmLoop').hidden = !isVideo;
+    $('pgmSound').hidden = !hasSound(state.type);
     paintLoopTog($('pgmLoop'), isVideo && state.loop !== false);
-    paintSoundTog($('pgmSound'), isVideo && !!state.audio);
+    paintSoundTog($('pgmSound'), hasSound(state.type) && !!state.audio);
     var segs = $('fitSeg').querySelectorAll('button');
     for (var i = 0; i < segs.length; i++) segs[i].classList.toggle('on', segs[i].dataset.fit === state.fit);
     if (document.activeElement !== $('bgPick')) $('bgPick').value = state.bg || '#000000';
@@ -1225,12 +1229,15 @@
       mode.title = 'Click to switch between looping and playing once';
       mode.onclick = function (e) { e.stopPropagation(); updateRow(row.id, { loop: once }); };
       r.appendChild(mode);
+    } else {
+      r.appendChild(el('span', 'muted', '–'));
+    }
+    if (hasSound(row.type)) {
       var snd = el('button', 'snd' + (row.audio ? ' on' : ''), row.audio ? 'SOUND' : 'MUTED');
       snd.title = row.audio ? 'Plays with sound on the wall. Click to mute' : 'Silent on the wall. Click to play its sound';
       snd.onclick = function (e) { e.stopPropagation(); updateRow(row.id, { audio: !row.audio }); };
       r.appendChild(snd);
     } else {
-      r.appendChild(el('span', 'muted', '–'));
       r.appendChild(el('span', 'muted', '–'));
     }
 

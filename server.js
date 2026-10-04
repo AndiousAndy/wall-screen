@@ -222,7 +222,8 @@ function syncFromRundown() {
     if (state.type === 'video' && row.type === 'video' && row.src === state.src && (row.loop !== false) !== state.loop) {
       patch.loop = row.loop !== false;
     }
-    if (state.type === 'video' && row.type === 'video' && row.src === state.src && !!row.audio !== !!state.audio) {
+    const sameItem = state.type === row.type && (row.type === 'screen' || (row.type === 'video' && row.src === state.src));
+    if (sameItem && hasSound(row.type) && !!row.audio !== !!state.audio) {
       patch.audio = !!row.audio;
     }
   }
@@ -282,6 +283,9 @@ function mediaNameFromSrc(src) {
 function mediaSrc(name) {
   return '/media/' + encodeURIComponent(name);
 }
+
+// Items that can play sound on the wall (muted unless their audio flag is set).
+function hasSound(type) { return type === 'video' || type === 'screen'; }
 
 function isFalse(v) { return v === false || v === 'false' || v === 0 || v === '0'; }
 function isTrue(v) { return v === true || v === 'true' || v === 1 || v === '1'; }
@@ -359,7 +363,7 @@ function normalizeItem(input) {
   if (item.type === 'screen' && input.src) item.src = String(input.src).slice(0, 64);
   if (item.type === 'text') item.text = String(input.text || '').slice(0, 5000);
   if (item.type === 'video') item.loop = !isFalse(input.loop);
-  if (item.type === 'video' && isTrue(input.audio)) item.audio = true;
+  if (hasSound(item.type) && isTrue(input.audio)) item.audio = true;
   if (input.fit) {
     if (!FITS.includes(input.fit)) return { error: 'fit must be one of: ' + FITS.join(', ') };
     item.fit = input.fit;
@@ -544,7 +548,7 @@ function takeItem(item, ms, action, extra) {
     src: item.src || '',
     text: item.text || '',
     loop: item.type === 'video' ? item.loop !== false : true,
-    audio: item.type === 'video' && !!item.audio,
+    audio: hasSound(item.type) && !!item.audio,
     takeId: state.takeId + 1,
     transition: ms,
     startedAt: Date.now(),
@@ -566,7 +570,7 @@ function programAsItem() {
   if (state.src) it.src = state.src;
   if (state.type === 'text') it.text = state.text;
   if (state.type === 'video') it.loop = state.loop;
-  if (state.type === 'video' && state.audio) it.audio = true;
+  if (hasSound(state.type) && state.audio) it.audio = true;
   const a = state.onAir;
   if (a) {
     if (a.id) it.id = a.id;
@@ -661,7 +665,7 @@ function applyShow(input) {
     patch.bg = String(input.bg);
   }
   if (input.loop !== undefined) patch.loop = state.type === 'video' ? !isFalse(input.loop) : true;
-  if (input.audio !== undefined) patch.audio = state.type === 'video' && isTrue(input.audio);
+  if (input.audio !== undefined) patch.audio = hasSound(state.type) && isTrue(input.audio);
   if (!Object.keys(patch).length) return 'Nothing to change';
   commit(patch);
   return null;

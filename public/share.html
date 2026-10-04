@@ -22,6 +22,8 @@
   .brand { font-weight: 800; letter-spacing: .14em; font-size: 14px; margin-bottom: 12px; }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 12px; }
   label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+  label.check { display: flex; align-items: flex-start; gap: 8px; }
+  label.check input { min-height: 0; margin: 2px 0 0; accent-color: var(--accent); }
   input, select {
     background: var(--panel2); color: var(--text); border: 1px solid var(--line);
     border-radius: 9px; padding: 7px 10px; font: inherit; min-height: 38px; min-width: 0;
@@ -60,6 +62,7 @@
       </select>
     </label>
   </div>
+  <label class="check"><input type="checkbox" id="withSound" checked> Share sound too (pick a tab, or the whole screen with "Share system audio" ticked; a window has no sound)</label>
   <div class="screen" id="screen"><video id="local" muted playsinline autoplay></video><div class="empty" id="empty">Not sharing</div></div>
   <div class="status">
     <span class="tally" id="tally">OFF</span>
@@ -85,7 +88,14 @@
   var state = null;
   var pcs = {}; // viewer page id -> RTCPeerConnection
 
-  try { $('name').value = localStorage.getItem('ws-share-name') || ''; $('hint').value = localStorage.getItem('ws-share-hint') || 'detail'; } catch (e) {}
+  try {
+    $('name').value = localStorage.getItem('ws-share-name') || '';
+    $('hint').value = localStorage.getItem('ws-share-hint') || 'detail';
+    $('withSound').checked = localStorage.getItem('ws-share-sound') !== '0';
+  } catch (e) {}
+  $('withSound').addEventListener('change', function () {
+    try { localStorage.setItem('ws-share-sound', this.checked ? '1' : '0'); } catch (e) {}
+  });
   $('name').addEventListener('change', function () {
     try { localStorage.setItem('ws-share-name', this.value); } catch (e) {}
     if (stream) register();
@@ -128,8 +138,8 @@
   setInterval(function () { sendSock({ type: 'ping', id: 'k' }); }, 15000); // keeps proxies from closing it
 
   // ---------- streaming to viewers ----------
-  // One connection per viewer page. The OBS display gets full quality; the control page's
-  // monitors get a small, cheap copy.
+  // One connection per viewer page. The OBS display gets full quality and the sound; the
+  // control page's monitors get a small, cheap, silent copy (so the operator doesn't hear it twice).
   function onSignal(m) {
     if (m.kind === 'hello') return offer(m.peer, m.role);
     var pc = pcs[m.peer];
@@ -158,6 +168,9 @@
         sendEncodings: [full ? { maxBitrate: 8000000, maxFramerate: 30 } : { maxBitrate: 600000, maxFramerate: 15, scaleResolutionDownBy: 3 }]
       });
     });
+    // The display always gets a sound channel, empty when nothing is shared with sound, so
+    // "Share something else" can add or drop sound without setting the connection up again.
+    if (full) pc.addTransceiver(stream.getAudioTracks()[0] || 'audio', { direction: 'sendonly', streams: [stream] });
     var lost = null;
     pc.onconnectionstatechange = function () {
       clearTimeout(lost);
@@ -182,7 +195,9 @@
     showError('');
     navigator.mediaDevices.getDisplayMedia({
       video: { width: { max: 1920 }, height: { max: 1080 }, frameRate: { ideal: 30, max: 30 } },
-      audio: false,
+      // Untouched, as for music: no voice-call echo cancelling or levelling.
+      audio: $('withSound').checked ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false,
+      systemAudio: 'include',
       selfBrowserSurface: 'exclude',
       surfaceSwitching: 'include'
     }).then(start, function (e) {
@@ -200,8 +215,14 @@
     }
     // Sharing something else swaps the picture on the connections already up, so the wall
     // cuts straight to it.
+    var audio = s.getAudioTracks()[0] || null;
+    if (audio) audio.contentHint = 'music';
     Object.keys(pcs).forEach(function (p) {
-      pcs[p].getSenders().forEach(function (snd) { if (track) snd.replaceTrack(track).catch(function () {}); });
+      pcs[p].getTransceivers().forEach(function (tr) {
+        var kind = tr.receiver.track.kind;
+        if (kind === 'video' && track) tr.sender.replaceTrack(track).catch(function () {});
+        if (kind === 'audio') tr.sender.replaceTrack(audio).catch(function () {});
+      });
     });
     if (old) old.getTracks().forEach(function (t) { t.stop(); });
     $('local').srcObject = s;
@@ -245,7 +266,8 @@
       : !sock ? 'Reconnecting to the server…'
       : !registered ? 'Connecting…'
       : (onAir ? 'On the wall.' : cued ? 'Cued in Preview, ready to take.' : 'Shared. The control panel can now cue it.')
-        + ' ' + viewers + (viewers === 1 ? ' viewer.' : ' viewers.');
+        + ' ' + viewers + (viewers === 1 ? ' viewer.' : ' viewers.')
+        + (stream.getAudioTracks().length ? ' With sound.' : ' No sound.');
   }
 
   function connect() {

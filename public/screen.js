@@ -15,6 +15,15 @@
     });
   }
 
+  // WebRTC sends speech-quality mono by default. The viewer asks for stereo at a music bitrate.
+  function musicAudio(sdp) {
+    var m = /a=rtpmap:(\d+) opus\/48000\/2/i.exec(sdp);
+    if (!m) return sdp;
+    return sdp.replace(new RegExp('(a=fmtp:' + m[1] + ' [^\\r\\n]*)'), function (line) {
+      return line.replace(/;?(stereo|sprop-stereo|maxaveragebitrate)=[^;]*/g, '') + ';stereo=1;sprop-stereo=1;maxaveragebitrate=192000';
+    });
+  }
+
   function newId() {
     return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
   }
@@ -78,7 +87,7 @@
       }
       pc.setRemoteDescription(sdp)
         .then(function () { return pc.createAnswer(); })
-        .then(function (a) { return pc.setLocalDescription(a); })
+        .then(function (a) { return pc.setLocalDescription({ type: a.type, sdp: musicAudio(a.sdp) }); })
         .then(function () { return gathered(pc); })
         .then(function () {
           if (pc === c.pc) post({ kind: 'answer', share: id, peer: opts.peer, sdp: pc.localDescription });

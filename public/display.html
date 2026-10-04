@@ -301,11 +301,11 @@
 
   // ---------- sound ----------
   // Videos are created muted (so they can always preload and autoplay) and only the on-air
-  // video is given sound, when its item asks for it. The control page's Program monitor
+  // video or screen share is given sound, when its item asks for it. The control page's Program monitor
   // (a preview) stays silent so the operator doesn't hear it twice. The default loop is
   // always silent.
   function wantsSound(el, s) {
-    return !isPreview && el !== defaultEl && s.type === 'video' && !!s.audio;
+    return !isPreview && el !== defaultEl && (s.type === 'video' || s.type === 'screen') && !!s.audio;
   }
 
   // Sound fades with the picture, so a dissolve doesn't cut the audio dead.
